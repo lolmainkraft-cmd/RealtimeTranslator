@@ -4,195 +4,285 @@ import Translation
 struct ContentView: View {
 
     @State private var engine = TranslatorEngine()
+    @State private var scrollProxy: ScrollViewProxy? = nil
 
-    // Configuración fija: la sesión se crea una vez y se reutiliza
-    private let translationConfig = TranslationSession.Configuration(
+    // Ambas sesiones se cargan al arrancar → modelos on-device descargados una vez
+    private let configENtoES = TranslationSession.Configuration(
         source: Locale.Language(identifier: "en"),
         target: Locale.Language(identifier: "es")
+    )
+    private let configEStoEN = TranslationSession.Configuration(
+        source: Locale.Language(identifier: "es"),
+        target: Locale.Language(identifier: "en")
     )
 
     var body: some View {
         ZStack {
-            // Fondo degradado oscuro
-            LinearGradient(
-                colors: [Color(white: 0.08), Color(white: 0.04)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
+            Color(white: 0.07).ignoresSafeArea()
 
-            VStack(spacing: 24) {
+            VStack(spacing: 0) {
 
-                // ── Cabecera ──────────────────────────────────────────────
-                VStack(spacing: 4) {
-                    Text("Traductor en Vivo")
-                        .font(.title2.bold())
-                        .foregroundStyle(.white)
-                    Text("Inglés → Español")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.5))
-                }
-                .padding(.top, 16)
+                // ── Header ────────────────────────────────────────────────
+                header
 
-                // ── Estado ────────────────────────────────────────────────
-                StatusCapsule(engine: engine)
+                // ── Chat history ──────────────────────────────────────────
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            if engine.messages.isEmpty {
+                                emptyState
+                            } else {
+                                ForEach(engine.messages) { msg in
+                                    BubbleView(message: msg)
+                                        .id(msg.id)
+                                }
+                            }
 
-                // ── Tarjeta: Inglés (STT) ─────────────────────────────────
-                TranscriptCard(
-                    flag:  "🇺🇸",
-                    label: "Inglés",
-                    text:  engine.recognizedText,
-                    color: .blue
-                )
-
-                // ── Tarjeta: Español (traducción) ──────────────────────────
-                TranscriptCard(
-                    flag:  "🇪🇸",
-                    label: "Español",
-                    text:  engine.translatedText,
-                    color: .green
-                )
-
-                Spacer()
-
-                // ── Error ─────────────────────────────────────────────────
-                if let msg = engine.errorMessage {
-                    Text(msg)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
+                            // Live preview of current phrase
+                            if engine.isListening && !engine.currentOriginal.isEmpty {
+                                LiveBubble(
+                                    original:   engine.currentOriginal,
+                                    translated: engine.currentTranslated,
+                                    lang:       engine.detectedLang
+                                )
+                                .id("live")
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                    }
+                    .onAppear { scrollProxy = proxy }
+                    .onChange(of: engine.messages.count) {
+                        withAnimation { proxy.scrollTo(engine.messages.last?.id, anchor: .bottom) }
+                    }
+                    .onChange(of: engine.currentOriginal) {
+                        withAnimation { proxy.scrollTo("live", anchor: .bottom) }
+                    }
                 }
 
-                // ── Botón principal ────────────────────────────────────────
-                MicButton(engine: engine)
-
-                // ── Hint auriculares ───────────────────────────────────────
-                if engine.isListening {
-                    Text("Usa auriculares para evitar eco")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.3))
-                }
-
-                Spacer().frame(height: 8)
+                // ── Bottom bar ────────────────────────────────────────────
+                bottomBar
             }
-            .padding(.horizontal, 20)
         }
-        // Obtener la sesión de traducción on-device al arrancar la app
-        .translationTask(translationConfig) { session in
-            engine.setTranslationSession(session)
+        .translationTask(configENtoES) { session in
+            engine.setSessionENtoES(session)
+        }
+        .translationTask(configEStoEN) { session in
+            engine.setSessionEStoEN(session)
         }
         .task {
             _ = await engine.requestPermissions()
         }
     }
+
+    // MARK: - Subviews
+
+    private var header: some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                Text("🇺🇸").font(.title3)
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(.white.opacity(0.4))
+                Text("🇪🇸").font(.title3)
+            }
+
+            StatusCapsule(engine: engine)
+        }
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity)
+        .background(Color(white: 0.1))
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "waveform.circle")
+                .font(.system(size: 48))
+                .foregroundStyle(.white.opacity(0.15))
+            Text("Pulsa el micrófono y empieza a hablar\nen inglés o español")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.3))
+                .multilineTextAlignment(.center)
+        }
+        .padding(.top, 60)
+    }
+
+    private var bottomBar: some View {
+        VStack(spacing: 8) {
+            // Audio routing hint
+            if engine.isListening {
+                HStack(spacing: 16) {
+                    Label("EN → altavoz", systemImage: "speaker.wave.2")
+                        .font(.caption2)
+                        .foregroundStyle(.blue.opacity(0.7))
+                    Label("ES → auriculares", systemImage: "airpodspro")
+                        .font(.caption2)
+                        .foregroundStyle(.green.opacity(0.7))
+                }
+            }
+
+            // Error
+            if let err = engine.errorMessage {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
+
+            // Mic button
+            Button {
+                if engine.isListening { engine.stopListening() }
+                else { try? engine.startListening() }
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(engine.isListening ? Color.red.opacity(0.15) : Color.white.opacity(0.1))
+                        .frame(width: 72, height: 72)
+                    Image(systemName: engine.isListening ? "stop.fill" : "mic.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(engine.isListening ? .red : .white)
+                }
+            }
+            .disabled(!engine.isSessionReady)
+            .opacity(engine.isSessionReady ? 1 : 0.35)
+            .buttonStyle(.plain)
+            .scaleEffect(engine.isSpeaking ? 1.08 : 1.0)
+            .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: engine.isSpeaking)
+
+            if !engine.isSessionReady {
+                Text("Descargando modelos de traducción...")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.35))
+            }
+        }
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity)
+        .background(Color(white: 0.1))
+    }
 }
 
-// MARK: - Subviews
+// MARK: - StatusCapsule
 
 struct StatusCapsule: View {
     let engine: TranslatorEngine
 
     var label: String {
-        if !engine.isSessionReady { return "Preparando traductor..." }
-        if engine.isSpeaking      { return "Traduciendo..." }
-        if engine.isListening     { return "Escuchando..." }
-        return "Listo"
+        if !engine.isSessionReady { return "Preparando..." }
+        if engine.isSpeaking      { return "Reproduciendo" }
+        if engine.isListening {
+            switch engine.detectedLang {
+            case .english: return "Inglés detectado"
+            case .spanish: return "Español detectado"
+            }
+        }
+        return "En pausa"
     }
 
-    var dotColor: Color {
+    var dot: Color {
         if engine.isSpeaking  { return .orange }
-        if engine.isListening { return .green }
+        if engine.isListening { return engine.detectedLang == .english ? .blue : .green }
         return .gray
     }
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 8, height: 8)
-                .opacity(engine.isListening || engine.isSpeaking ? 1 : 0.4)
-                .animation(
-                    engine.isListening
-                        ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
-                        : .default,
-                    value: engine.isListening
-                )
-
-            Text(label)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.white.opacity(0.85))
+            Circle().fill(dot).frame(width: 7, height: 7)
+            Text(label).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.8))
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12).padding(.vertical, 5)
         .background(.white.opacity(0.08))
         .clipShape(Capsule())
         .animation(.easeInOut, value: label)
     }
 }
 
-struct TranscriptCard: View {
-    let flag:  String
-    let label: String
-    let text:  String
-    let color: Color
+// MARK: - BubbleView (historial)
+
+struct BubbleView: View {
+    let message: TranslationMessage
+
+    var isEN: Bool { message.sourceLang == .english }
+    var accentColor: Color { isEN ? .blue : .green }
+    var flag: String { isEN ? "🇺🇸" : "🇪🇸" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Text(flag)
-                Text(label)
-                    .font(.caption.bold())
-                    .foregroundStyle(color)
+        VStack(alignment: isEN ? .leading : .trailing, spacing: 4) {
+            // Flag + timestamp
+            HStack {
+                if !isEN { Spacer() }
+                Text(flag + " " + message.timestamp.formatted(.dateTime.hour().minute().second()))
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.3))
+                if isEN { Spacer() }
             }
 
-            ScrollView {
-                Text(text.isEmpty ? "—" : text)
-                    .font(.body)
-                    .foregroundStyle(text.isEmpty ? .white.opacity(0.25) : .white)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .animation(.easeInOut(duration: 0.2), value: text)
+            HStack {
+                if !isEN { Spacer(minLength: 40) }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    // Original
+                    Text(message.original)
+                        .font(.subheadline)
+                        .foregroundStyle(.white)
+
+                    Divider().background(accentColor.opacity(0.3))
+
+                    // Translated
+                    Text(message.translated)
+                        .font(.subheadline.italic())
+                        .foregroundStyle(accentColor.opacity(0.9))
+                }
+                .padding(12)
+                .background(accentColor.opacity(0.1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(accentColor.opacity(0.25), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                if isEN { Spacer(minLength: 40) }
             }
-            .frame(maxHeight: 110)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(color.opacity(0.07))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(color.opacity(0.25), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 
-struct MicButton: View {
-    let engine: TranslatorEngine
+// MARK: - LiveBubble (frase en curso)
+
+struct LiveBubble: View {
+    let original:   String
+    let translated: String
+    let lang:       TranslationMessage.DetectedLanguage
+
+    var isEN: Bool { lang == .english }
+    var color: Color { isEN ? .blue : .green }
 
     var body: some View {
-        Button {
-            if engine.isListening {
-                engine.stopListening()
-            } else {
-                guard engine.isSessionReady else { return }
-                try? engine.startListening()
-            }
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(engine.isListening ? Color.red.opacity(0.15) : Color.white.opacity(0.1))
-                    .frame(width: 90, height: 90)
+        HStack {
+            if !isEN { Spacer(minLength: 40) }
 
-                Image(systemName: engine.isListening ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(engine.isListening ? .red : .white)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(original)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.6))
+                if !translated.isEmpty {
+                    Text(translated)
+                        .font(.subheadline.italic())
+                        .foregroundStyle(color.opacity(0.7))
+                }
             }
+            .padding(12)
+            .background(color.opacity(0.06))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(color.opacity(0.15), lineWidth: 1)
+                    .animation(.easeInOut(duration: 0.8).repeatForever(), value: original)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+
+            if isEN { Spacer(minLength: 40) }
         }
-        .disabled(!engine.isSessionReady)
-        .opacity(engine.isSessionReady ? 1 : 0.4)
-        .scaleEffect(engine.isListening ? 1.05 : 1.0)
-        .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: engine.isListening)
-        .buttonStyle(.plain)
     }
 }
 
