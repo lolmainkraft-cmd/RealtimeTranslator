@@ -57,6 +57,7 @@ final class TranslatorEngine: NSObject {
     // VAD + chunking
     private var silenceStart:   Date? = nil
     private var debounceTask:   Task<Void, Never>?
+    private var whisperLoopTask: Task<Void, Never>?
     private var blockMic        = false
     private var isTranslating   = false
 
@@ -166,6 +167,7 @@ final class TranslatorEngine: NSObject {
                 self.whisper.append(buf)
                 self.updateLevel(buf)
             }
+            startWhisperLoop()
         }
 
         audioEngine.prepare()
@@ -174,6 +176,8 @@ final class TranslatorEngine: NSObject {
 
     func stopListening() {
         debounceTask?.cancel()
+        whisperLoopTask?.cancel()
+        whisperLoopTask = nil
         if activeMic != .none { store.upsert(currentConversation) }
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
@@ -205,49 +209,40 @@ final class TranslatorEngine: NSObject {
 
             let isSilent = db < -40
             if isSilent {
-                if self.silenceStart == nil {
-                    self.silenceStart = Date()
-                    // Silencio detectado → programar transcripción/traducción
-                    if self.activeMic == .english { self.scheduleWhisperChunk() }
-                }
+                if self.silenceStart == nil { self.silenceStart = Date() }
             } else {
                 self.silenceStart = nil
-                // Cancelar debounce mientras hay voz activa
-                if self.activeMic == .english {
-                    self.debounceTask?.cancel()
+                if self.activeMic == .english && self.liveEnglish.isEmpty {
                     self.liveEnglish = "Escuchando..."
                 }
             }
         }
     }
 
-    // MARK: - Inglés: Whisper streaming por chunks
+    // MARK: - Inglés: Whisper bucle periódico
 
-    private func scheduleWhisperChunk() {
-        debounceTask?.cancel()
-        debounceTask = Task {
-            try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled, self.activeMic == .english else { return }
-
-            let samples = self.whisper.bufferCount
-            self.log("Silencio detectado. Samples en buffer: \(samples) (mín: 12800)")
-            guard self.whisper.hasEnoughAudio else {
-                self.log("Buffer insuficiente, esperando más audio")
-                self.liveEnglish = ""
-                return
+    private func startWhisperLoop() {
+        whisperLoopTask?.cancel()
+        whisperLoopTask = Task {
+            while !Task.isCancelled && self.activeMic == .english {
+                try? await Task.sleep(for: .milliseconds(2500))
+                guard !Task.isCancelled, self.activeMic == .english else { break }
+                guard self.whisper.hasEnoughAudio else {
+                    self.log("Buffer insuficiente (\(self.whisper.bufferCount) samples), esperando...")
+                    continue
+                }
+                self.log("Transcribiendo (\(self.whisper.bufferCount) samples)...")
+                self.liveEnglish = "Transcribiendo..."
+                let t0 = Date()
+                guard let text = await self.whisper.transcribe(), !text.isEmpty else {
+                    self.log("Whisper vacío (\(String(format:"%.1f", Date().timeIntervalSince(t0)))s)")
+                    self.liveEnglish = ""
+                    continue
+                }
+                self.log("Whisper OK \(String(format:"%.1f", Date().timeIntervalSince(t0)))s: \"\(text.prefix(40))\"")
+                self.liveEnglish = text
+                await self.handleEnglishText(text)
             }
-
-            self.log("Llamando a Whisper.transcribe()...")
-            self.liveEnglish = "Transcribiendo..."
-            let t0 = Date()
-            guard let text = await self.whisper.transcribe(), !text.isEmpty else {
-                self.log("Whisper devolvió nil o vacío (\(String(format:"%.1f", Date().timeIntervalSince(t0)))s)")
-                self.liveEnglish = ""
-                return
-            }
-            self.log("Whisper OK en \(String(format:"%.1f", Date().timeIntervalSince(t0)))s: \"\(text.prefix(40))\"")
-            self.liveEnglish = text
-            await self.handleEnglishText(text)
         }
     }
 
