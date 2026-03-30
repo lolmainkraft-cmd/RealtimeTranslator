@@ -233,12 +233,11 @@ struct WaveformView: View {
     }
 
     private func barHeight(for index: Int) -> CGFloat {
-        let base: CGFloat = 3
-        let max:  CGFloat = 18
-        // Centro más alto, extremos más bajos
+        let base: CGFloat  = 3
+        let maxH: CGFloat  = 18
         let shape: [Float] = [0.5, 0.8, 1.0, 0.8, 0.5]
-        let h = base + CGFloat(level * shape[index]) * (max - base)
-        return max(base, h)
+        let h = base + CGFloat(level * shape[index]) * (maxH - base)
+        return Swift.max(base, h)
     }
 }
 
