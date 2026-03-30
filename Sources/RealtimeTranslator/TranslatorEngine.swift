@@ -111,8 +111,8 @@ final class TranslatorEngine: NSObject {
                            options: [.allowBluetooth, .allowBluetoothA2DP])
         try av.setActive(true)
 
-        // API iOS 17+: forzar cancelación de eco si el hardware lo soporta
-        if av.isEchoCancelledInputAvailable {
+        // iOS 18.2+: forzar cancelación de eco por hardware si está disponible
+        if #available(iOS 18.2, *), av.isEchoCancelledInputAvailable {
             try av.setPrefersEchoCancelledInput(true)
         }
 
