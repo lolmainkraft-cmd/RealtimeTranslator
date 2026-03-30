@@ -32,7 +32,7 @@ jobs:
           xcodebuild \
             -project RealtimeTranslator.xcodeproj \
             -scheme RealtimeTranslator \
-            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -configuration Release \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_REQUIRED=NO \
