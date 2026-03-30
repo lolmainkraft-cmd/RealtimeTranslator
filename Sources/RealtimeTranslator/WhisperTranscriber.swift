@@ -46,6 +46,7 @@ final class WhisperTranscriber {
     func reset() { sampleBuffer = [] }
 
     var hasEnoughAudio: Bool { sampleBuffer.count >= minSamples }
+    var bufferCount:    Int  { sampleBuffer.count }
 
     // MARK: - Transcripción
 

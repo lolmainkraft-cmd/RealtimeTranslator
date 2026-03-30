@@ -27,6 +27,7 @@ final class TranslatorEngine: NSObject {
     var isReady      = false
     var audioLevel:  Float = 0
     var statusLabel  = ""
+    var debugLog:    [String] = []   // visible en pantalla
 
     // Paneles en vivo
     var liveEnglish  = ""
@@ -71,9 +72,17 @@ final class TranslatorEngine: NSObject {
 
     func boot() async {
         _ = await requestPermissions()
-        // Cargar Whisper en paralelo con el resto del setup
+        log("Iniciando WhisperKit...")
         await whisper.setup()
+        log(whisper.isReady ? "Whisper listo ✓" : "Whisper FALLÓ: \(whisper.statusLabel)")
         updateReadyState()
+    }
+
+    private func log(_ msg: String) {
+        let ts = Date().formatted(.dateTime.hour().minute().second())
+        debugLog.append("[\(ts)] \(msg)")
+        if debugLog.count > 30 { debugLog.removeFirst() }
+        print("DEBUG: \(msg)")
     }
 
     private func updateReadyState() {
@@ -217,17 +226,26 @@ final class TranslatorEngine: NSObject {
     private func scheduleWhisperChunk() {
         debounceTask?.cancel()
         debounceTask = Task {
-            // Esperar 400ms de silencio confirmado
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled, self.activeMic == .english else { return }
-            guard self.whisper.hasEnoughAudio else { self.liveEnglish = ""; return }
 
-            self.liveEnglish = "Transcribiendo..."
-            guard let text = await self.whisper.transcribe(), !text.isEmpty else {
+            let samples = self.whisper.bufferCount
+            self.log("Silencio detectado. Samples en buffer: \(samples) (mín: 12800)")
+            guard self.whisper.hasEnoughAudio else {
+                self.log("Buffer insuficiente, esperando más audio")
                 self.liveEnglish = ""
                 return
             }
 
+            self.log("Llamando a Whisper.transcribe()...")
+            self.liveEnglish = "Transcribiendo..."
+            let t0 = Date()
+            guard let text = await self.whisper.transcribe(), !text.isEmpty else {
+                self.log("Whisper devolvió nil o vacío (\(String(format:"%.1f", Date().timeIntervalSince(t0)))s)")
+                self.liveEnglish = ""
+                return
+            }
+            self.log("Whisper OK en \(String(format:"%.1f", Date().timeIntervalSince(t0)))s: \"\(text.prefix(40))\"")
             self.liveEnglish = text
             await self.handleEnglishText(text)
         }

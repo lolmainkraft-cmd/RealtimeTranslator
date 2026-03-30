@@ -25,9 +25,34 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showHistory) { HistoryView(store: engine.store) }
+        .overlay(alignment: .bottom) { debugOverlay }
         .translationTask(configENtoES) { engine.setSessionENtoES($0) }
         .translationTask(configEStoEN) { engine.setSessionEStoEN($0) }
         .task { await engine.boot() }
+    }
+
+    // MARK: - Debug overlay (quitar en producción)
+
+    private var debugOverlay: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(engine.debugLog.enumerated()), id: \.offset) { i, line in
+                        Text(line)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.green)
+                            .id(i)
+                    }
+                }
+                .padding(8)
+            }
+            .frame(maxWidth: .infinity, maxHeight: 140)
+            .background(Color.black.opacity(0.85))
+            .onChange(of: engine.debugLog.count) {
+                proxy.scrollTo(engine.debugLog.count - 1, anchor: .bottom)
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     // MARK: - Header
