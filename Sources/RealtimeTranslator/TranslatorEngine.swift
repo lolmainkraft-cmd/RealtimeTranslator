@@ -5,7 +5,7 @@ import Translation
 import NaturalLanguage
 import Observation
 
-// MARK: - Message model
+// MARK: - Live message model (UI)
 
 struct TranslationMessage: Identifiable {
     let id         = UUID()
@@ -33,7 +33,11 @@ final class TranslatorEngine: NSObject {
     var messages: [TranslationMessage] = []
     var errorMessage: String?
 
-    // Two STT recognizers — same audio, different locale models
+    // History store
+    var store = ConversationStore()
+    private var currentConversation = StoredConversation()
+
+    // Two STT recognizers — same audio feed, different locale models
     private let recognizerEN = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
     private let recognizerES = SFSpeechRecognizer(locale: Locale(identifier: "es-MX"))!
     private var requestEN: SFSpeechAudioBufferRecognitionRequest?
@@ -52,11 +56,11 @@ final class TranslatorEngine: NSObject {
     private var pendingEN = ""
     private var pendingES = ""
 
-    // Delta tracking — só traducimos palabras nuevas
-    private var lastSourceTranslated = ""
+    // Delta tracking — only translate new words
+    private var lastSourceTranslated  = ""
     private var lastDetectedLang: TranslationMessage.DetectedLanguage? = nil
 
-    // Feedback-loop gate: true mientras TTS suena por altavoz
+    // Feedback-loop gate: block mic buffers while speaker TTS plays
     private var blockMicForSpeaker = false
 
     private var isTranslating = false
@@ -96,16 +100,27 @@ final class TranslatorEngine: NSObject {
     func startListening() throws {
         guard !isListening else { return }
         errorMessage = nil
+        currentConversation = StoredConversation()   // nueva conversación
+        messages = []
 
         let av = AVAudioSession.sharedInstance()
-        try av.setCategory(.playAndRecord, mode: .measurement,
-                           options: [.allowBluetooth, .allowBluetoothA2DP, .duckOthers])
+
+        // .voiceChat activa AEC por hardware (igual que las llamadas de teléfono)
+        // Esto elimina el feedback del altavoz a nivel de DSP
+        try av.setCategory(.playAndRecord, mode: .voiceChat,
+                           options: [.allowBluetooth, .allowBluetoothA2DP])
         try av.setActive(true)
+
+        // API iOS 17+: forzar cancelación de eco si el hardware lo soporta
+        if av.isEchoCancelledInputAvailable {
+            try av.setPrefersEchoCancelledInput(true)
+        }
 
         setupRequests()
         let input  = audioEngine.inputNode
         let format = input.outputFormat(forBus: 0)
 
+        // Gate software: mientras el altavoz habla, no alimentamos los reconocedores
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
             guard let self, !self.blockMicForSpeaker else { return }
             self.requestEN?.append(buf)
@@ -121,13 +136,14 @@ final class TranslatorEngine: NSObject {
 
     func stopListening() {
         debounceTask?.cancel()
+        store.upsert(currentConversation)            // guardar conversación al parar
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         requestEN?.endAudio(); taskEN?.cancel()
         requestES?.endAudio(); taskES?.cancel()
         requestEN = nil; requestES = nil
         taskEN    = nil; taskES    = nil
-        isListening = false
+        isListening        = false
         blockMicForSpeaker = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
@@ -145,17 +161,13 @@ final class TranslatorEngine: NSObject {
         guard let req = requestEN else { return }
         taskEN = recognizerEN.recognitionTask(with: req) { [weak self] result, error in
             guard let self else { return }
-            if isNoInputError(error) {
-                Task { @MainActor in self.restartRecognition() }
-                return
-            }
+            if isNoInputError(error) { Task { @MainActor in self.restartRecognition() }; return }
             guard let result else { return }
-            let text   = result.bestTranscription.formattedString
+            let text    = result.bestTranscription.formattedString
             let isFinal = result.isFinal
             Task { @MainActor in
                 self.pendingEN = text
-                isFinal ? await self.pickAndTranslate(isFinal: true)
-                        : self.scheduleDebounce()
+                isFinal ? await self.pickAndTranslate(isFinal: true) : self.scheduleDebounce()
             }
         }
     }
@@ -166,12 +178,11 @@ final class TranslatorEngine: NSObject {
             guard let self else { return }
             if isNoInputError(error) { return }
             guard let result else { return }
-            let text   = result.bestTranscription.formattedString
+            let text    = result.bestTranscription.formattedString
             let isFinal = result.isFinal
             Task { @MainActor in
                 self.pendingES = text
-                isFinal ? await self.pickAndTranslate(isFinal: true)
-                        : self.scheduleDebounce()
+                isFinal ? await self.pickAndTranslate(isFinal: true) : self.scheduleDebounce()
             }
         }
     }
@@ -217,7 +228,6 @@ final class TranslatorEngine: NSObject {
         let textES = pendingES
         guard !textEN.isEmpty || !textES.isEmpty else { return }
 
-        // Elegir idioma dominante
         langDetector.processString(textEN)
         let scoreEN = langDetector.languageHypotheses(withMaximum: 1)[.english] ?? 0
         langDetector.reset()
@@ -229,45 +239,38 @@ final class TranslatorEngine: NSObject {
         let fullText: String
 
         if scoreEN >= scoreES && !textEN.isEmpty {
-            lang     = .english
-            fullText = textEN
+            lang = .english;  fullText = textEN
         } else if !textES.isEmpty {
-            lang     = .spanish
-            fullText = textES
+            lang = .spanish;  fullText = textES
         } else { return }
 
         detectedLang    = lang
         currentOriginal = fullText
 
-        // Cambio de idioma → resetear delta
         if lang != lastDetectedLang {
             lastSourceTranslated = ""
             lastDetectedLang     = lang
             synthesizer.stopSpeaking(at: .immediate)
         }
 
-        // Calcular delta (palabras nuevas desde la última traducción)
-        let delta = computeDelta(full: fullText, translated: lastSourceTranslated)
+        let delta     = computeDelta(full: fullText, translated: lastSourceTranslated)
         let wordCount = delta.split(separator: " ").count
-
-        // Traducir si hay ≥3 palabras nuevas, o si es el resultado final
         guard wordCount >= 3 || (isFinal && !delta.isEmpty) else { return }
 
         lastSourceTranslated = fullText
         await runTranslation(delta: delta, fullText: fullText, lang: lang, isFinal: isFinal)
     }
 
-    /// Extrae las palabras de `full` que no están en `translated` (comparación por prefijo)
     private func computeDelta(full: String, translated: String) -> String {
         guard !translated.isEmpty else { return full }
         if full.hasPrefix(translated) {
             return String(full.dropFirst(translated.count)).trimmingCharacters(in: .whitespaces)
         }
-        // El texto cambió mucho (corrección del STT) → retransmitir todo
-        return full
+        return full   // el STT corrigió el texto → retransmitir todo
     }
 
-    private func runTranslation(delta: String, fullText: String, lang: TranslationMessage.DetectedLanguage, isFinal: Bool) async {
+    private func runTranslation(delta: String, fullText: String,
+                                lang: TranslationMessage.DetectedLanguage, isFinal: Bool) async {
         let session = lang == .english ? sessionENtoES : sessionEStoEN
         guard let session else { return }
 
@@ -279,28 +282,33 @@ final class TranslatorEngine: NSObject {
             let translated = result.targetText
             currentTranslated += (currentTranslated.isEmpty ? "" : " ") + translated
 
-            // Solo guardar en historial en el resultado final
             if isFinal {
+                let finalTranslated = currentTranslated
                 messages.append(TranslationMessage(
                     original:   fullText,
-                    translated: currentTranslated,
+                    translated: finalTranslated,
                     sourceLang: lang
                 ))
-                currentOriginal   = ""
-                currentTranslated = ""
+                // Persistir en el historial
+                currentConversation.messages.append(StoredMessage(
+                    original:   fullText,
+                    translated: finalTranslated,
+                    sourceLang: lang == .english ? "en" : "es"
+                ))
+                store.upsert(currentConversation)
+
+                currentOriginal      = ""
+                currentTranslated    = ""
                 lastSourceTranslated = ""
             }
 
-            // Encolar TTS (sin interrumpir el chunk anterior)
             speakChunk(translated, lang: lang)
         } catch {
             print("Translation error: \(error)")
         }
     }
 
-    // MARK: - TTS + feedback-loop gate
-
-    private var routedToSpeaker = false
+    // MARK: - TTS + audio routing
 
     private func speakChunk(_ text: String, lang: TranslationMessage.DetectedLanguage) {
         guard !text.isEmpty else { return }
@@ -308,25 +316,22 @@ final class TranslatorEngine: NSObject {
         let av = AVAudioSession.sharedInstance()
 
         if lang == .english {
-            // Inglés detectado → traducción ES → altavoz (interlocutor sin auriculares)
+            // EN detectado → TTS en ES → altavoz (para quien no tiene auriculares)
             try? av.overrideOutputAudioPort(.speaker)
-            routedToSpeaker    = true
-            blockMicForSpeaker = true   // ← gate: silencia el mic mientras habla el altavoz
+            blockMicForSpeaker = true   // gate software de backup
         } else {
-            // Español detectado → traducción EN → auriculares (no hay feedback)
+            // ES detectado → TTS en EN → auriculares (no hay riesgo de feedback)
             try? av.overrideOutputAudioPort(.none)
-            routedToSpeaker    = false
             blockMicForSpeaker = false
         }
 
-        let utterance       = AVSpeechUtterance(string: text)
-        utterance.voice     = lang == .english
+        let utterance   = AVSpeechUtterance(string: text)
+        utterance.voice = lang == .english
             ? AVSpeechSynthesisVoice(language: "es-MX")
             : AVSpeechSynthesisVoice(language: "en-US")
-        utterance.rate      = AVSpeechUtteranceDefaultSpeechRate * 1.1
-        utterance.volume    = 1.0
-        isSpeaking          = true
-        synthesizer.speak(utterance)  // AVSpeechSynthesizer encola automáticamente
+        utterance.rate  = AVSpeechUtteranceDefaultSpeechRate * 1.1
+        isSpeaking      = true
+        synthesizer.speak(utterance)
     }
 }
 
@@ -336,17 +341,17 @@ extension TranslatorEngine: AVSpeechSynthesizerDelegate {
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in
-            // Si no hay más utterances en cola y salía por altavoz, desbloquear el mic
-            if !synthesizer.isSpeaking {
-                self.isSpeaking        = false
-                self.blockMicForSpeaker = false
-            }
+            guard !synthesizer.isSpeaking else { return }   // aún hay chunks en cola
+            self.isSpeaking        = false
+            // Pequeño margen antes de reabrir el mic (cola de eco residual)
+            try? await Task.sleep(for: .milliseconds(200))
+            self.blockMicForSpeaker = false
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         Task { @MainActor in
-            self.isSpeaking         = false
+            self.isSpeaking        = false
             self.blockMicForSpeaker = false
         }
     }
