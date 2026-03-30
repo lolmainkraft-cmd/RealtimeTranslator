@@ -48,31 +48,27 @@ struct ContentView: View {
 
             Spacer()
 
-            // Botón de dirección — toca para cambiar
-            Button { engine.toggleDirection() } label: {
-                HStack(spacing: 8) {
-                    Text(engine.direction.label)
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                    Image(systemName: "arrow.trianglehead.swap")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.5))
+            // Dos botones de idioma
+            HStack(spacing: 10) {
+                LangButton(
+                    title: "INGLÉS",
+                    flag: "🇺🇸",
+                    isSelected: engine.direction == .enToEs,
+                    color: .blue
+                ) {
+                    if engine.direction != .enToEs { engine.toggleDirection() }
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 10)
-                .background(
-                    Capsule().fill(engine.direction == .enToEs ? Color.blue.opacity(0.25) : Color.green.opacity(0.25))
-                )
-                .overlay(
-                    Capsule().stroke(
-                        engine.direction == .enToEs ? Color.blue.opacity(0.4) : Color.green.opacity(0.4),
-                        lineWidth: 1
-                    )
-                )
+
+                LangButton(
+                    title: "ESPAÑOL",
+                    flag: "🇪🇸",
+                    isSelected: engine.direction == .esToEn,
+                    color: .green
+                ) {
+                    if engine.direction != .esToEn { engine.toggleDirection() }
+                }
             }
-            .buttonStyle(.plain)
             .disabled(!engine.isSessionReady)
-            .animation(.easeInOut(duration: 0.2), value: engine.direction)
 
             Spacer()
 
@@ -364,6 +360,36 @@ struct StoredBubble: View {
                 if isLeft { Spacer(minLength: 40) }
             }
         }
+    }
+}
+
+// MARK: - LangButton
+
+struct LangButton: View {
+    let title:      String
+    let flag:       String
+    let isSelected: Bool
+    let color:      Color
+    let action:     () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Text(flag).font(.title3)
+                Text(title)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(isSelected ? color : .white.opacity(0.4))
+            }
+            .frame(width: 88, height: 60)
+            .background(isSelected ? color.opacity(0.2) : Color.white.opacity(0.05))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(isSelected ? color.opacity(0.6) : Color.white.opacity(0.1), lineWidth: isSelected ? 2 : 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.15), value: isSelected)
     }
 }
 
