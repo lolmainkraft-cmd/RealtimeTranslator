@@ -2,19 +2,27 @@ import Foundation
 import AVFoundation
 import Speech
 import Translation
-import NaturalLanguage
 import Observation
 
-// MARK: - Live message model (UI)
+// MARK: - Direction
+
+enum TranslationDirection {
+    case enToEs, esToEn
+
+    var sourceLocale: String  { self == .enToEs ? "en-US" : "es-MX" }
+    var targetVoice:  String  { self == .enToEs ? "es-MX" : "en-US" }
+    var label:        String  { self == .enToEs ? "🇺🇸 → 🇪🇸" : "🇪🇸 → 🇺🇸" }
+    var toggled: TranslationDirection { self == .enToEs ? .esToEn : .enToEs }
+}
+
+// MARK: - Live message
 
 struct TranslationMessage: Identifiable {
     let id         = UUID()
     let original:    String
     let translated:  String
-    let sourceLang:  DetectedLanguage
+    let direction:   TranslationDirection
     let timestamp  = Date()
-
-    enum DetectedLanguage { case english, spanish }
 }
 
 // MARK: - Engine
@@ -23,48 +31,36 @@ struct TranslationMessage: Identifiable {
 @MainActor
 final class TranslatorEngine: NSObject {
 
-    // Public state
+    var direction:     TranslationDirection = .enToEs
     var isListening    = false
     var isSessionReady = false
     var isSpeaking     = false
     var currentOriginal   = ""
     var currentTranslated = ""
-    var detectedLang: TranslationMessage.DetectedLanguage = .english
-    var messages: [TranslationMessage] = []
+    var messages:    [TranslationMessage] = []
     var errorMessage: String?
 
-    // History store
     var store = ConversationStore()
     private var currentConversation = StoredConversation()
 
-    // Two STT recognizers — same audio feed, different locale models
     private let recognizerEN = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
     private let recognizerES = SFSpeechRecognizer(locale: Locale(identifier: "es-MX"))!
-    private var requestEN: SFSpeechAudioBufferRecognitionRequest?
-    private var requestES: SFSpeechAudioBufferRecognitionRequest?
-    private var taskEN:    SFSpeechRecognitionTask?
-    private var taskES:    SFSpeechRecognitionTask?
+    private var activeRecognizer: SFSpeechRecognizer { direction == .enToEs ? recognizerEN : recognizerES }
 
-    // Two translation sessions
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task:    SFSpeechRecognitionTask?
+
     private var sessionENtoES: TranslationSession?
     private var sessionEStoEN: TranslationSession?
+    private var activeSession: TranslationSession? { direction == .enToEs ? sessionENtoES : sessionEStoEN }
 
-    private let audioEngine  = AVAudioEngine()
-    private let synthesizer  = AVSpeechSynthesizer()
-    private let langDetector = NLLanguageRecognizer()
+    private let audioEngine = AVAudioEngine()
+    private let synthesizer = AVSpeechSynthesizer()
 
-    private var pendingEN = ""
-    private var pendingES = ""
-
-    // Delta tracking — only translate new words
-    private var lastSourceTranslated  = ""
-    private var lastDetectedLang: TranslationMessage.DetectedLanguage? = nil
-
-    // Feedback-loop gate: block mic buffers while speaker TTS plays
-    private var blockMicForSpeaker = false
-
-    private var isTranslating = false
-    private var debounceTask: Task<Void, Never>?
+    private var lastTranslated   = ""
+    private var blockMic         = false
+    private var isTranslating    = false
+    private var debounceTask:    Task<Void, Never>?
 
     override init() {
         super.init()
@@ -85,251 +81,169 @@ final class TranslatorEngine: NSObject {
 
     // MARK: - Sessions
 
-    func setSessionENtoES(_ session: TranslationSession) {
-        sessionENtoES = session
-        isSessionReady = sessionEStoEN != nil
-    }
+    func setSessionENtoES(_ s: TranslationSession) { sessionENtoES = s; checkReady() }
+    func setSessionEStoEN(_ s: TranslationSession) { sessionEStoEN = s; checkReady() }
+    private func checkReady() { isSessionReady = sessionENtoES != nil && sessionEStoEN != nil }
 
-    func setSessionEStoEN(_ session: TranslationSession) {
-        sessionEStoEN = session
-        isSessionReady = sessionENtoES != nil
+    // MARK: - Direction toggle
+
+    func toggleDirection() {
+        let wasListening = isListening
+        if wasListening { stopListening() }
+        direction      = direction.toggled
+        lastTranslated = ""
+        if wasListening { try? startListening() }
     }
 
     // MARK: - Start / Stop
 
     func startListening() throws {
         guard !isListening else { return }
-        errorMessage = nil
-        currentConversation = StoredConversation()   // nueva conversación
-        messages = []
+        errorMessage        = nil
+        currentConversation = StoredConversation()
+        messages            = []
+        lastTranslated      = ""
 
         let av = AVAudioSession.sharedInstance()
-
-        // .voiceChat activa AEC por hardware (igual que las llamadas de teléfono)
-        // Esto elimina el feedback del altavoz a nivel de DSP
         try av.setCategory(.playAndRecord, mode: .voiceChat,
                            options: [.allowBluetooth, .allowBluetoothA2DP])
         try av.setActive(true)
-
-        // iOS 18.2+: forzar cancelación de eco por hardware si está disponible
         if #available(iOS 18.2, *), av.isEchoCancelledInputAvailable {
             try av.setPrefersEchoCancelledInput(true)
         }
 
-        setupRequests()
+        request = SFSpeechAudioBufferRecognitionRequest()
+        request?.shouldReportPartialResults = true
+
         let input  = audioEngine.inputNode
         let format = input.outputFormat(forBus: 0)
-
-        // Gate software: mientras el altavoz habla, no alimentamos los reconocedores
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
-            guard let self, !self.blockMicForSpeaker else { return }
-            self.requestEN?.append(buf)
-            self.requestES?.append(buf)
+            guard let self, !self.blockMic else { return }
+            self.request?.append(buf)
         }
 
         audioEngine.prepare()
         try audioEngine.start()
-        launchENTask()
-        launchESTask()
+        launchTask()
         isListening = true
     }
 
     func stopListening() {
         debounceTask?.cancel()
-        store.upsert(currentConversation)            // guardar conversación al parar
+        store.upsert(currentConversation)
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
-        requestEN?.endAudio(); taskEN?.cancel()
-        requestES?.endAudio(); taskES?.cancel()
-        requestEN = nil; requestES = nil
-        taskEN    = nil; taskES    = nil
-        isListening        = false
-        blockMicForSpeaker = false
+        request?.endAudio(); task?.cancel()
+        request = nil; task = nil
+        isListening = false
+        blockMic    = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    // MARK: - STT tasks
+    // MARK: - STT task
 
-    private func setupRequests() {
-        requestEN = SFSpeechAudioBufferRecognitionRequest()
-        requestES = SFSpeechAudioBufferRecognitionRequest()
-        requestEN?.shouldReportPartialResults = true
-        requestES?.shouldReportPartialResults = true
-    }
-
-    private func launchENTask() {
-        guard let req = requestEN else { return }
-        taskEN = recognizerEN.recognitionTask(with: req) { [weak self] result, error in
+    private func launchTask() {
+        guard let req = request else { return }
+        task = activeRecognizer.recognitionTask(with: req) { [weak self] result, error in
             guard let self else { return }
-            if isNoInputError(error) { Task { @MainActor in self.restartRecognition() }; return }
+            if (error as NSError?)?.code == 1110 {
+                Task { @MainActor in self.restartTask() }
+                return
+            }
             guard let result else { return }
             let text    = result.bestTranscription.formattedString
             let isFinal = result.isFinal
             Task { @MainActor in
-                self.pendingEN = text
-                isFinal ? await self.pickAndTranslate(isFinal: true) : self.scheduleDebounce()
+                self.currentOriginal = text
+                self.debounceTask?.cancel()
+                if isFinal {
+                    await self.translate(text)
+                } else {
+                    self.debounceTask = Task {
+                        try? await Task.sleep(for: .milliseconds(900))
+                        guard !Task.isCancelled else { return }
+                        await self.translate(text)
+                    }
+                }
             }
         }
     }
 
-    private func launchESTask() {
-        guard let req = requestES else { return }
-        taskES = recognizerES.recognitionTask(with: req) { [weak self] result, error in
-            guard let self else { return }
-            if isNoInputError(error) { return }
-            guard let result else { return }
-            let text    = result.bestTranscription.formattedString
-            let isFinal = result.isFinal
-            Task { @MainActor in
-                self.pendingES = text
-                isFinal ? await self.pickAndTranslate(isFinal: true) : self.scheduleDebounce()
-            }
-        }
-    }
-
-    private func restartRecognition() {
+    private func restartTask() {
         guard isListening else { return }
         audioEngine.inputNode.removeTap(onBus: 0)
-        requestEN?.endAudio(); taskEN?.cancel()
-        requestES?.endAudio(); taskES?.cancel()
-        requestEN = nil; requestES = nil; taskEN = nil; taskES = nil
+        request?.endAudio(); task?.cancel()
+        request = nil; task = nil
 
         Task {
-            try? await Task.sleep(for: .milliseconds(150))
+            try? await Task.sleep(for: .milliseconds(200))
             guard self.isListening else { return }
-            self.setupRequests()
+            self.request = SFSpeechAudioBufferRecognitionRequest()
+            self.request?.shouldReportPartialResults = true
             let input  = self.audioEngine.inputNode
             let format = input.outputFormat(forBus: 0)
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
-                guard let self, !self.blockMicForSpeaker else { return }
-                self.requestEN?.append(buf)
-                self.requestES?.append(buf)
+                guard let self, !self.blockMic else { return }
+                self.request?.append(buf)
             }
-            self.launchENTask()
-            self.launchESTask()
+            self.launchTask()
         }
     }
 
-    // MARK: - Language detection + delta translation
+    // MARK: - Translation
 
-    private func scheduleDebounce() {
-        debounceTask?.cancel()
-        debounceTask = Task {
-            try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled else { return }
-            await pickAndTranslate(isFinal: false)
-        }
-    }
-
-    private func pickAndTranslate(isFinal: Bool) async {
-        guard !isTranslating else { return }
-
-        let textEN = pendingEN
-        let textES = pendingES
-        guard !textEN.isEmpty || !textES.isEmpty else { return }
-
-        langDetector.processString(textEN)
-        let scoreEN = langDetector.languageHypotheses(withMaximum: 1)[.english] ?? 0
-        langDetector.reset()
-        langDetector.processString(textES)
-        let scoreES = langDetector.languageHypotheses(withMaximum: 1)[.spanish] ?? 0
-        langDetector.reset()
-
-        let lang: TranslationMessage.DetectedLanguage
-        let fullText: String
-
-        if scoreEN >= scoreES && !textEN.isEmpty {
-            lang = .english;  fullText = textEN
-        } else if !textES.isEmpty {
-            lang = .spanish;  fullText = textES
-        } else { return }
-
-        detectedLang    = lang
-        currentOriginal = fullText
-
-        if lang != lastDetectedLang {
-            lastSourceTranslated = ""
-            lastDetectedLang     = lang
-            synthesizer.stopSpeaking(at: .immediate)
-        }
-
-        let delta     = computeDelta(full: fullText, translated: lastSourceTranslated)
-        let wordCount = delta.split(separator: " ").count
-        guard wordCount >= 3 || (isFinal && !delta.isEmpty) else { return }
-
-        lastSourceTranslated = fullText
-        await runTranslation(delta: delta, fullText: fullText, lang: lang, isFinal: isFinal)
-    }
-
-    private func computeDelta(full: String, translated: String) -> String {
-        guard !translated.isEmpty else { return full }
-        if full.hasPrefix(translated) {
-            return String(full.dropFirst(translated.count)).trimmingCharacters(in: .whitespaces)
-        }
-        return full   // el STT corrigió el texto → retransmitir todo
-    }
-
-    private func runTranslation(delta: String, fullText: String,
-                                lang: TranslationMessage.DetectedLanguage, isFinal: Bool) async {
-        let session = lang == .english ? sessionENtoES : sessionEStoEN
-        guard let session else { return }
+    private func translate(_ text: String) async {
+        guard !text.isEmpty, text != lastTranslated, !isTranslating else { return }
+        guard let session = activeSession else { return }
 
         isTranslating = true
         defer { isTranslating = false }
 
         do {
-            let result     = try await session.translate(delta)
+            let result     = try await session.translate(text)
             let translated = result.targetText
-            currentTranslated += (currentTranslated.isEmpty ? "" : " ") + translated
+            currentTranslated = translated
+            lastTranslated    = text
 
-            if isFinal {
-                let finalTranslated = currentTranslated
-                messages.append(TranslationMessage(
-                    original:   fullText,
-                    translated: finalTranslated,
-                    sourceLang: lang
-                ))
-                // Persistir en el historial
-                currentConversation.messages.append(StoredMessage(
-                    original:   fullText,
-                    translated: finalTranslated,
-                    sourceLang: lang == .english ? "en" : "es"
-                ))
-                store.upsert(currentConversation)
+            let msg = TranslationMessage(original: text, translated: translated, direction: direction)
+            messages.append(msg)
 
-                currentOriginal      = ""
-                currentTranslated    = ""
-                lastSourceTranslated = ""
-            }
+            currentConversation.messages.append(StoredMessage(
+                original:   text,
+                translated: translated,
+                sourceLang: direction == .enToEs ? "en" : "es"
+            ))
+            store.upsert(currentConversation)
 
-            speakChunk(translated, lang: lang)
+            currentOriginal   = ""
+            currentTranslated = ""
+
+            speak(translated)
         } catch {
             print("Translation error: \(error)")
         }
     }
 
-    // MARK: - TTS + audio routing
+    // MARK: - TTS
 
-    private func speakChunk(_ text: String, lang: TranslationMessage.DetectedLanguage) {
+    private func speak(_ text: String) {
         guard !text.isEmpty else { return }
+        synthesizer.stopSpeaking(at: .immediate)
 
         let av = AVAudioSession.sharedInstance()
-
-        if lang == .english {
-            // EN detectado → TTS en ES → altavoz (para quien no tiene auriculares)
+        // EN→ES: traducción en español → altavoz (interlocutor sin auriculares)
+        // ES→EN: traducción en inglés  → auriculares (sin riesgo de feedback)
+        if direction == .enToEs {
             try? av.overrideOutputAudioPort(.speaker)
-            blockMicForSpeaker = true   // gate software de backup
+            blockMic = true
         } else {
-            // ES detectado → TTS en EN → auriculares (no hay riesgo de feedback)
             try? av.overrideOutputAudioPort(.none)
-            blockMicForSpeaker = false
+            blockMic = false
         }
 
         let utterance   = AVSpeechUtterance(string: text)
-        utterance.voice = lang == .english
-            ? AVSpeechSynthesisVoice(language: "es-MX")
-            : AVSpeechSynthesisVoice(language: "en-US")
-        utterance.rate  = AVSpeechUtteranceDefaultSpeechRate * 1.1
+        utterance.voice = AVSpeechSynthesisVoice(language: direction.targetVoice)
+        utterance.rate  = AVSpeechUtteranceDefaultSpeechRate
         isSpeaking      = true
         synthesizer.speak(utterance)
     }
@@ -338,28 +252,15 @@ final class TranslatorEngine: NSObject {
 // MARK: - AVSpeechSynthesizerDelegate
 
 extension TranslatorEngine: AVSpeechSynthesizerDelegate {
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish _: AVSpeechUtterance) {
         Task { @MainActor in
-            guard !synthesizer.isSpeaking else { return }   // aún hay chunks en cola
-            self.isSpeaking        = false
-            // Pequeño margen antes de reabrir el mic (cola de eco residual)
-            try? await Task.sleep(for: .milliseconds(200))
-            self.blockMicForSpeaker = false
+            guard !synthesizer.isSpeaking else { return }
+            self.isSpeaking = false
+            try? await Task.sleep(for: .milliseconds(250))
+            self.blockMic = false
         }
     }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            self.isSpeaking        = false
-            self.blockMicForSpeaker = false
-        }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel _: AVSpeechUtterance) {
+        Task { @MainActor in self.isSpeaking = false; self.blockMic = false }
     }
-}
-
-// MARK: - Helpers
-
-private func isNoInputError(_ error: Error?) -> Bool {
-    guard let e = error as NSError? else { return false }
-    return e.domain == "kAFAssistantErrorDomain" && e.code == 1110
 }

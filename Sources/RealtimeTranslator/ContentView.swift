@@ -36,31 +36,47 @@ struct ContentView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack {
-            // Historial
+        HStack(spacing: 12) {
+
+            // Botón historial
             Button { showHistory = true } label: {
                 Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90")
                     .font(.system(size: 18))
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.55))
                     .frame(width: 44, height: 44)
             }
 
             Spacer()
 
-            VStack(spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("🇺🇸").font(.title3)
-                    Image(systemName: "arrow.left.arrow.right")
-                        .font(.caption.bold())
-                        .foregroundStyle(.white.opacity(0.35))
-                    Text("🇪🇸").font(.title3)
+            // Botón de dirección — toca para cambiar
+            Button { engine.toggleDirection() } label: {
+                HStack(spacing: 8) {
+                    Text(engine.direction.label)
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Image(systemName: "arrow.trianglehead.swap")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.5))
                 }
-                StatusCapsule(engine: engine)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(
+                    Capsule().fill(engine.direction == .enToEs ? Color.blue.opacity(0.25) : Color.green.opacity(0.25))
+                )
+                .overlay(
+                    Capsule().stroke(
+                        engine.direction == .enToEs ? Color.blue.opacity(0.4) : Color.green.opacity(0.4),
+                        lineWidth: 1
+                    )
+                )
             }
+            .buttonStyle(.plain)
+            .disabled(!engine.isSessionReady)
+            .animation(.easeInOut(duration: 0.2), value: engine.direction)
 
             Spacer()
 
-            // Placeholder para centrar el título
+            // Placeholder derecho
             Color.clear.frame(width: 44, height: 44)
         }
         .padding(.horizontal, 12)
@@ -80,11 +96,12 @@ struct ContentView: View {
                     ForEach(engine.messages) { msg in
                         BubbleView(message: msg).id(msg.id)
                     }
+                    // Frase en curso
                     if engine.isListening && !engine.currentOriginal.isEmpty {
                         LiveBubble(
                             original:   engine.currentOriginal,
                             translated: engine.currentTranslated,
-                            lang:       engine.detectedLang
+                            direction:  engine.direction
                         )
                         .id("live")
                     }
@@ -106,7 +123,7 @@ struct ContentView: View {
             Image(systemName: "waveform.circle")
                 .font(.system(size: 52))
                 .foregroundStyle(.white.opacity(0.12))
-            Text("Pulsa el micrófono\ny empieza a hablar")
+            Text("Selecciona la dirección y pulsa el micrófono")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.3))
                 .multilineTextAlignment(.center)
@@ -118,80 +135,46 @@ struct ContentView: View {
     // MARK: - Bottom bar
 
     private var bottomBar: some View {
-        VStack(spacing: 8) {
-            if engine.isListening {
-                HStack(spacing: 20) {
-                    Label("EN → altavoz", systemImage: "speaker.wave.2")
-                        .font(.caption2)
-                        .foregroundStyle(.blue.opacity(0.65))
-                    Label("ES → auriculares", systemImage: "airpodspro")
-                        .font(.caption2)
-                        .foregroundStyle(.green.opacity(0.65))
-                }
+        VStack(spacing: 10) {
+
+            // Estado
+            if engine.isListening || engine.isSpeaking {
+                Text(engine.isSpeaking ? "Traduciendo..." : "Escuchando...")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.45))
             }
 
             if let err = engine.errorMessage {
                 Text(err).font(.caption).foregroundStyle(.red).multilineTextAlignment(.center).padding(.horizontal)
             }
 
+            // Micrófono
             Button {
                 if engine.isListening { engine.stopListening() }
                 else { try? engine.startListening() }
             } label: {
                 ZStack {
                     Circle()
-                        .fill(engine.isListening ? Color.red.opacity(0.15) : Color.white.opacity(0.1))
-                        .frame(width: 72, height: 72)
+                        .fill(engine.isListening ? Color.red.opacity(0.18) : Color.white.opacity(0.1))
+                        .frame(width: 76, height: 76)
                     Image(systemName: engine.isListening ? "stop.fill" : "mic.fill")
-                        .font(.system(size: 28, weight: .semibold))
+                        .font(.system(size: 30, weight: .semibold))
                         .foregroundStyle(engine.isListening ? .red : .white)
                 }
             }
             .disabled(!engine.isSessionReady)
             .opacity(engine.isSessionReady ? 1 : 0.35)
             .buttonStyle(.plain)
-            .scaleEffect(engine.isSpeaking ? 1.06 : 1.0)
-            .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: engine.isSpeaking)
+            .scaleEffect(engine.isListening ? 1.06 : 1.0)
+            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: engine.isListening)
 
             if !engine.isSessionReady {
                 Text("Descargando modelos...").font(.caption2).foregroundStyle(.white.opacity(0.3))
             }
         }
-        .padding(.vertical, 14)
+        .padding(.vertical, 16)
         .frame(maxWidth: .infinity)
         .background(Color(white: 0.1))
-    }
-}
-
-// MARK: - StatusCapsule
-
-struct StatusCapsule: View {
-    let engine: TranslatorEngine
-
-    var label: String {
-        if !engine.isSessionReady { return "Preparando..." }
-        if engine.isSpeaking      { return "Reproduciendo" }
-        if engine.isListening {
-            return engine.detectedLang == .english ? "Inglés detectado" : "Español detectado"
-        }
-        return "En pausa"
-    }
-
-    var dot: Color {
-        if engine.isSpeaking  { return .orange }
-        if engine.isListening { return engine.detectedLang == .english ? .blue : .green }
-        return .gray
-    }
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(dot).frame(width: 7, height: 7)
-            Text(label).font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.8))
-        }
-        .padding(.horizontal, 12).padding(.vertical, 5)
-        .background(.white.opacity(0.08))
-        .clipShape(Capsule())
-        .animation(.easeInOut, value: label)
     }
 }
 
@@ -200,31 +183,39 @@ struct StatusCapsule: View {
 struct BubbleView: View {
     let message: TranslationMessage
 
-    var isEN: Bool   { message.sourceLang == .english }
-    var color: Color { isEN ? .blue : .green }
+    var isLeft: Bool  { message.direction == .enToEs }
+    var color: Color  { isLeft ? .blue : .green }
+    var sourceFlag: String { isLeft ? "🇺🇸" : "🇪🇸" }
+    var targetFlag: String { isLeft ? "🇪🇸" : "🇺🇸" }
 
     var body: some View {
-        VStack(alignment: isEN ? .leading : .trailing, spacing: 4) {
+        VStack(alignment: isLeft ? .leading : .trailing, spacing: 4) {
+            // Timestamp
             HStack {
-                if !isEN { Spacer() }
-                Text((isEN ? "🇺🇸 " : "🇪🇸 ") + message.timestamp.formatted(.dateTime.hour().minute().second()))
+                if !isLeft { Spacer() }
+                Text(sourceFlag + " " + message.timestamp.formatted(.dateTime.hour().minute().second()))
                     .font(.caption2).foregroundStyle(.white.opacity(0.28))
-                if isEN { Spacer() }
+                if isLeft { Spacer() }
             }
-            HStack {
-                if !isEN { Spacer(minLength: 40) }
+            HStack(alignment: .top) {
+                if !isLeft { Spacer(minLength: 40) }
                 VStack(alignment: .leading, spacing: 6) {
                     Text(message.original)
-                        .font(.subheadline).foregroundStyle(.white)
-                    Divider().background(color.opacity(0.3))
-                    Text(message.translated)
-                        .font(.subheadline.italic()).foregroundStyle(color.opacity(0.9))
+                        .font(.body)
+                        .foregroundStyle(.white)
+                    HStack(spacing: 4) {
+                        Text(targetFlag).font(.caption)
+                        Text(message.translated)
+                            .font(.body.italic())
+                            .foregroundStyle(color.opacity(0.9))
+                    }
                 }
-                .padding(12)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(color.opacity(0.1))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(color.opacity(0.25), lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                if isEN { Spacer(minLength: 40) }
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(color.opacity(0.3), lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                if isLeft { Spacer(minLength: 40) }
             }
         }
     }
@@ -235,25 +226,30 @@ struct BubbleView: View {
 struct LiveBubble: View {
     let original:   String
     let translated: String
-    let lang:       TranslationMessage.DetectedLanguage
+    let direction:  TranslationDirection
 
-    var isEN:  Bool   { lang == .english }
-    var color: Color  { isEN ? .blue : .green }
+    var isLeft: Bool  { direction == .enToEs }
+    var color: Color  { isLeft ? .blue : .green }
 
     var body: some View {
         HStack {
-            if !isEN { Spacer(minLength: 40) }
+            if !isLeft { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 4) {
-                Text(original).font(.subheadline).foregroundStyle(.white.opacity(0.55))
+                Text(original)
+                    .font(.body)
+                    .foregroundStyle(.white.opacity(0.5))
                 if !translated.isEmpty {
-                    Text(translated).font(.subheadline.italic()).foregroundStyle(color.opacity(0.65))
+                    Text(translated)
+                        .font(.body.italic())
+                        .foregroundStyle(color.opacity(0.6))
                 }
             }
-            .padding(12)
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(color.opacity(0.06))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(color.opacity(0.15), lineWidth: 1))
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            if isEN { Spacer(minLength: 40) }
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(color.opacity(0.15), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            if isLeft { Spacer(minLength: 40) }
         }
     }
 }
@@ -262,17 +258,17 @@ struct LiveBubble: View {
 
 struct HistoryView: View {
     let store: ConversationStore
-    @State private var selected: StoredConversation? = nil
+    @State private var selected: StoredConversation?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Color(white: 0.07).ignoresSafeArea()
-
                 if store.conversations.isEmpty {
                     VStack(spacing: 12) {
-                        Image(systemName: "tray").font(.system(size: 48)).foregroundStyle(.white.opacity(0.12))
+                        Image(systemName: "tray")
+                            .font(.system(size: 48)).foregroundStyle(.white.opacity(0.12))
                         Text("Sin conversaciones guardadas")
                             .font(.subheadline).foregroundStyle(.white.opacity(0.3))
                     }
@@ -282,15 +278,11 @@ struct HistoryView: View {
                             Button { selected = conv } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(conv.title)
-                                        .font(.subheadline.bold())
-                                        .foregroundStyle(.white)
+                                        .font(.subheadline.bold()).foregroundStyle(.white)
                                     Text(conv.preview)
-                                        .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.45))
-                                        .lineLimit(1)
+                                        .font(.caption).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
                                     Text("\(conv.messages.count) mensajes")
-                                        .font(.caption2)
-                                        .foregroundStyle(.white.opacity(0.25))
+                                        .font(.caption2).foregroundStyle(.white.opacity(0.25))
                                 }
                                 .padding(.vertical, 4)
                             }
@@ -310,9 +302,7 @@ struct HistoryView: View {
                     Button("Cerrar") { dismiss() }.foregroundStyle(.white)
                 }
             }
-            .sheet(item: $selected) { conv in
-                ConversationDetailView(conversation: conv)
-            }
+            .sheet(item: $selected) { ConversationDetailView(conversation: $0) }
         }
     }
 }
@@ -350,35 +340,31 @@ struct ConversationDetailView: View {
 
 struct StoredBubble: View {
     let message: StoredMessage
-
-    var isEN:  Bool   { message.sourceLang == "en" }
-    var color: Color  { isEN ? .blue : .green }
+    var isLeft: Bool  { message.sourceLang == "en" }
+    var color: Color  { isLeft ? .blue : .green }
 
     var body: some View {
-        VStack(alignment: isEN ? .leading : .trailing, spacing: 4) {
+        VStack(alignment: isLeft ? .leading : .trailing, spacing: 4) {
             HStack {
-                if !isEN { Spacer() }
-                Text((isEN ? "🇺🇸 " : "🇪🇸 ") + message.timestamp.formatted(.dateTime.hour().minute()))
+                if !isLeft { Spacer() }
+                Text((isLeft ? "🇺🇸 " : "🇪🇸 ") + message.timestamp.formatted(.dateTime.hour().minute()))
                     .font(.caption2).foregroundStyle(.white.opacity(0.28))
-                if isEN { Spacer() }
+                if isLeft { Spacer() }
             }
             HStack {
-                if !isEN { Spacer(minLength: 40) }
+                if !isLeft { Spacer(minLength: 40) }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(message.original).font(.subheadline).foregroundStyle(.white)
-                    Divider().background(color.opacity(0.3))
-                    Text(message.translated).font(.subheadline.italic()).foregroundStyle(color.opacity(0.9))
+                    Text(message.original).font(.body).foregroundStyle(.white)
+                    Text(message.translated).font(.body.italic()).foregroundStyle(color.opacity(0.9))
                 }
-                .padding(12)
+                .padding(14)
                 .background(color.opacity(0.1))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(color.opacity(0.25), lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                if isEN { Spacer(minLength: 40) }
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(color.opacity(0.3), lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                if isLeft { Spacer(minLength: 40) }
             }
         }
     }
 }
 
-#Preview {
-    ContentView()
-}
+#Preview { ContentView() }
