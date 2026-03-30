@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    name: Build unsigned IPA
+    name: Build ad-hoc signed IPA
     runs-on: macos-15
 
     steps:
@@ -27,7 +27,7 @@ jobs:
         run: xcodegen generate --spec project.yml
 
       # ── 4. Build ──────────────────────────────────────────────────────────
-      - name: Build (unsigned)
+      - name: Build
         run: |
           xcodebuild \
             -project RealtimeTranslator.xcodeproj \
@@ -37,14 +37,18 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGN_IDENTITY="" \
-            | xcpretty || true
+            CODE_SIGN_IDENTITY=""
 
-      # ── 5. Empaquetar IPA ─────────────────────────────────────────────────
-      - name: Package IPA
+      # ── 5. Firma ad-hoc + empaquetar IPA ─────────────────────────────────
+      - name: Ad-hoc sign and package IPA
         run: |
-          APP=$(find "$RUNNER_TEMP/DerivedData" -name "*.app" -not -path "*/sim/*" | head -1)
+          APP=$(find "$RUNNER_TEMP/DerivedData" -name "*.app" \
+                ! -path "*/sim/*" ! -path "*iphonesimulator*" | head -1)
           echo "App bundle: $APP"
+
+          # Firma ad-hoc: necesaria para LiveContainer y la mayoría de herramientas de sideload
+          codesign --force --deep --sign "-" "$APP"
+
           mkdir -p Payload
           cp -r "$APP" Payload/RealtimeTranslator.app
           zip -r RealtimeTranslator.ipa Payload
