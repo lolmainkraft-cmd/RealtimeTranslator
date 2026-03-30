@@ -27,7 +27,7 @@ struct ContentView: View {
         .sheet(isPresented: $showHistory) { HistoryView(store: engine.store) }
         .translationTask(configENtoES) { engine.setSessionENtoES($0) }
         .translationTask(configEStoEN) { engine.setSessionEStoEN($0) }
-        .task { _ = await engine.requestPermissions() }
+        .task { await engine.boot() }
     }
 
     // MARK: - Header
@@ -95,8 +95,8 @@ struct ContentView: View {
             }
 
             if !engine.isReady {
-                Text("Descargando modelos de traducción...")
-                    .font(.caption2).foregroundStyle(.white.opacity(0.3))
+                Text(engine.whisper.isReady ? "Cargando modelos de traducción..." : engine.whisper.statusLabel)
+                    .font(.caption2).foregroundStyle(.white.opacity(0.35))
             }
 
             HStack(spacing: 32) {
