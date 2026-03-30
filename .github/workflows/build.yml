@@ -1,0 +1,60 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-15
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Xcode version ─────────────────────────────────────────────────
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+
+      # ── 3. XcodeGen ──────────────────────────────────────────────────────
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate .xcodeproj
+        run: xcodegen generate --spec project.yml
+
+      # ── 4. Build ──────────────────────────────────────────────────────────
+      - name: Build (unsigned)
+        run: |
+          xcodebuild \
+            -project RealtimeTranslator.xcodeproj \
+            -scheme RealtimeTranslator \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | xcpretty || true
+
+      # ── 5. Empaquetar IPA ─────────────────────────────────────────────────
+      - name: Package IPA
+        run: |
+          APP=$(find "$RUNNER_TEMP/DerivedData" -name "*.app" -not -path "*/sim/*" | head -1)
+          echo "App bundle: $APP"
+          mkdir -p Payload
+          cp -r "$APP" Payload/RealtimeTranslator.app
+          zip -r RealtimeTranslator.ipa Payload
+          echo "IPA size: $(du -sh RealtimeTranslator.ipa | cut -f1)"
+
+      # ── 6. Subir artefacto ────────────────────────────────────────────────
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RealtimeTranslator-IPA
+          path: RealtimeTranslator.ipa
+          retention-days: 14
+          if-no-files-found: error
