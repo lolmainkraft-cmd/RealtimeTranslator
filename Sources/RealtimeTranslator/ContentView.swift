@@ -21,7 +21,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 header
                 panels
-                bottomBar
+                micBar
             }
         }
         .sheet(isPresented: $showHistory) { HistoryView(store: engine.store) }
@@ -33,157 +33,149 @@ struct ContentView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack {
+            Text("Traductor")
+                .font(.headline)
+                .foregroundStyle(.white.opacity(0.7))
+            Spacer()
             Button { showHistory = true } label: {
                 Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90")
                     .font(.system(size: 17))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(.white.opacity(0.45))
                     .frame(width: 40, height: 40)
             }
-
-            Spacer()
-
-            HStack(spacing: 8) {
-                LangButton(title: "INGLÉS",   flag: "🇺🇸",
-                           isSelected: engine.direction == .enToEs, color: .blue)
-                { engine.setDirection(.enToEs) }
-
-                LangButton(title: "ESPAÑOL",  flag: "🇪🇸",
-                           isSelected: engine.direction == .esToEn, color: .green)
-                { engine.setDirection(.esToEn) }
-            }
-            .disabled(!engine.isSessionReady)
-
-            Spacer()
-            Color.clear.frame(width: 40, height: 40)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(Color(white: 0.11))
     }
 
-    // MARK: - Dos paneles
+    // MARK: - Paneles
 
     private var panels: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
                 // Panel inglés (arriba)
-                TranslationPanel(
-                    flag:      "🇺🇸",
-                    langLabel: "INGLÉS",
-                    messages:  engine.messages.map { ($0.english, $0.id) },
-                    liveText:  engine.liveEnglish,
-                    isInput:   engine.direction == .enToEs && engine.isListening,
-                    isOutput:  engine.direction == .esToEn && engine.isSpeaking,
-                    audioLevel: engine.direction == .enToEs ? engine.audioLevel : 0,
-                    color:     .blue,
-                    height:    geo.size.height / 2
+                LangPanel(
+                    flag:       "🇺🇸",
+                    label:      "INGLÉS",
+                    messages:   engine.messages.map { $0.english },
+                    liveText:   engine.liveEnglish,
+                    isListening: engine.activeMic == .english,
+                    isSpeaking:  engine.activeMic == .spanish && engine.isSpeaking,
+                    audioLevel:  engine.activeMic == .english ? engine.audioLevel : 0,
+                    color:      .blue,
+                    height:     geo.size.height / 2
                 )
 
                 Divider().background(Color.white.opacity(0.08))
 
                 // Panel español (abajo)
-                TranslationPanel(
-                    flag:      "🇪🇸",
-                    langLabel: "ESPAÑOL",
-                    messages:  engine.messages.map { ($0.spanish, $0.id) },
-                    liveText:  engine.liveSpanish,
-                    isInput:   engine.direction == .esToEn && engine.isListening,
-                    isOutput:  engine.direction == .enToEs && engine.isSpeaking,
-                    audioLevel: engine.direction == .esToEn ? engine.audioLevel : 0,
-                    color:     .green,
-                    height:    geo.size.height / 2
+                LangPanel(
+                    flag:       "🇪🇸",
+                    label:      "ESPAÑOL",
+                    messages:   engine.messages.map { $0.spanish },
+                    liveText:   engine.liveSpanish,
+                    isListening: engine.activeMic == .spanish,
+                    isSpeaking:  engine.activeMic == .english && engine.isSpeaking,
+                    audioLevel:  engine.activeMic == .spanish ? engine.audioLevel : 0,
+                    color:      .green,
+                    height:     geo.size.height / 2
                 )
             }
         }
     }
 
-    // MARK: - Bottom bar
+    // MARK: - Barra de micros
 
-    private var bottomBar: some View {
+    private var micBar: some View {
         VStack(spacing: 6) {
             if let err = engine.errorMessage {
                 Text(err).font(.caption).foregroundStyle(.red).padding(.horizontal)
             }
 
-            Button {
-                if engine.isListening { engine.stopListening() }
-                else { try? engine.startListening() }
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(engine.isListening ? Color.red.opacity(0.2) : Color.white.opacity(0.1))
-                        .frame(width: 72, height: 72)
-                    Image(systemName: engine.isListening ? "stop.fill" : "mic.fill")
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundStyle(engine.isListening ? .red : .white)
-                }
+            if !engine.isReady {
+                Text("Descargando modelos de traducción...")
+                    .font(.caption2).foregroundStyle(.white.opacity(0.3))
             }
-            .disabled(!engine.isSessionReady)
-            .opacity(engine.isSessionReady ? 1 : 0.35)
-            .buttonStyle(.plain)
-            .scaleEffect(engine.isListening && !engine.isSpeaking ? 1.06 : 1.0)
-            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: engine.isListening)
 
-            if !engine.isSessionReady {
-                Text("Descargando modelos...").font(.caption2).foregroundStyle(.white.opacity(0.3))
+            HStack(spacing: 32) {
+
+                // Mic inglés → traduce a español en tiempo real → AirPods
+                MicButton(
+                    flag:      "🇺🇸",
+                    label:     "INGLÉS",
+                    hint:      "🎧 AirPods",
+                    isActive:  engine.activeMic == .english,
+                    color:     .blue,
+                    audioLevel: engine.activeMic == .english ? engine.audioLevel : 0
+                ) { engine.tapEnglishMic() }
+
+                // Mic español → traduce a inglés al terminar → altavoz
+                MicButton(
+                    flag:      "🇪🇸",
+                    label:     "ESPAÑOL",
+                    hint:      "🔊 Altavoz",
+                    isActive:  engine.activeMic == .spanish,
+                    color:     .green,
+                    audioLevel: engine.activeMic == .spanish ? engine.audioLevel : 0
+                ) { engine.tapSpanishMic() }
             }
+            .disabled(!engine.isReady)
+            .opacity(engine.isReady ? 1 : 0.35)
         }
-        .padding(.vertical, 12)
+        .padding(.vertical, 14)
         .frame(maxWidth: .infinity)
         .background(Color(white: 0.11))
     }
 }
 
-// MARK: - TranslationPanel
+// MARK: - LangPanel
 
-struct TranslationPanel: View {
-    let flag:       String
-    let langLabel:  String
-    let messages:   [(text: String, id: UUID)]
-    let liveText:   String
-    let isInput:    Bool     // escuchando en este idioma
-    let isOutput:   Bool     // reproduciendo en este idioma
-    let audioLevel: Float
-    let color:      Color
-    let height:     CGFloat
+struct LangPanel: View {
+    let flag:        String
+    let label:       String
+    let messages:    [String]
+    let liveText:    String
+    let isListening: Bool
+    let isSpeaking:  Bool
+    let audioLevel:  Float
+    let color:       Color
+    let height:      CGFloat
 
     var body: some View {
         VStack(spacing: 0) {
             // Cabecera del panel
             HStack(spacing: 8) {
                 Text(flag).font(.title3)
-                Text(langLabel)
-                    .font(.caption.bold())
-                    .foregroundStyle(color)
+                Text(label).font(.caption.bold()).foregroundStyle(color)
                 Spacer()
-                if isInput {
+                if isListening {
                     WaveformView(level: audioLevel, color: color)
-                        .frame(width: 48, height: 18)
+                        .frame(width: 44, height: 16)
                 }
-                if isOutput {
-                    Label("", systemImage: "speaker.wave.2.fill")
+                if isSpeaking {
+                    Image(systemName: "speaker.wave.2.fill")
                         .font(.caption)
                         .foregroundStyle(color.opacity(0.7))
-                        .symbolEffect(.variableColor, isActive: isOutput)
+                        .symbolEffect(.variableColor.iterative, isActive: isSpeaking)
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(color.opacity(0.06))
+            .background(color.opacity(0.07))
 
-            // Contenido
+            // Texto
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(messages, id: \.id) { item in
-                            Text(item.text)
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(Array(messages.enumerated()), id: \.offset) { i, text in
+                            Text(text)
                                 .font(.body)
                                 .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .id(item.id)
+                                .id(i)
                         }
-                        // Texto en vivo (parcial)
                         if !liveText.isEmpty {
                             Text(liveText)
                                 .font(.body)
@@ -192,15 +184,13 @@ struct TranslationPanel: View {
                                 .id("live")
                         }
                         if messages.isEmpty && liveText.isEmpty {
-                            Text("—")
-                                .font(.body)
-                                .foregroundStyle(.white.opacity(0.15))
+                            Text("—").font(.body).foregroundStyle(.white.opacity(0.12))
                         }
                     }
                     .padding(14)
                 }
                 .onChange(of: messages.count) {
-                    withAnimation { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
+                    withAnimation { proxy.scrollTo(messages.count - 1, anchor: .bottom) }
                 }
                 .onChange(of: liveText) {
                     withAnimation { proxy.scrollTo("live", anchor: .bottom) }
@@ -208,7 +198,61 @@ struct TranslationPanel: View {
             }
         }
         .frame(height: height)
-        .background(Color(white: 0.07))
+    }
+}
+
+// MARK: - MicButton
+
+struct MicButton: View {
+    let flag:       String
+    let label:      String
+    let hint:       String
+    let isActive:   Bool
+    let color:      Color
+    let audioLevel: Float
+    let action:     () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                ZStack {
+                    // Anillo exterior pulsante cuando activo
+                    if isActive {
+                        Circle()
+                            .stroke(color.opacity(0.3), lineWidth: 3)
+                            .frame(width: 82, height: 82)
+                            .scaleEffect(1.0 + CGFloat(audioLevel) * 0.18)
+                            .animation(.easeOut(duration: 0.1), value: audioLevel)
+                    }
+
+                    Circle()
+                        .fill(isActive ? color.opacity(0.25) : Color.white.opacity(0.08))
+                        .frame(width: 72, height: 72)
+                        .overlay(
+                            Circle().stroke(
+                                isActive ? color.opacity(0.7) : Color.white.opacity(0.15),
+                                lineWidth: isActive ? 2 : 1
+                            )
+                        )
+
+                    VStack(spacing: 2) {
+                        Text(flag).font(.title2)
+                        Image(systemName: isActive ? "stop.fill" : "mic.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(isActive ? color : .white.opacity(0.6))
+                    }
+                }
+
+                Text(label)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(isActive ? color : .white.opacity(0.4))
+
+                Text(hint)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.3))
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -218,57 +262,17 @@ struct WaveformView: View {
     let level: Float
     let color: Color
 
-    private let barCount = 5
-
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(0..<barCount, id: \.self) { i in
-                let delay = Double(i) * 0.08
+            ForEach(0..<5, id: \.self) { i in
+                let shapes: [Float] = [0.5, 0.8, 1.0, 0.8, 0.5]
+                let h = 3 + CGFloat(level * shapes[i]) * 13
                 RoundedRectangle(cornerRadius: 2)
                     .fill(color)
-                    .frame(width: 4, height: barHeight(for: i))
-                    .animation(.easeInOut(duration: 0.15).delay(delay), value: level)
+                    .frame(width: 4, height: Swift.max(3, h))
+                    .animation(.easeInOut(duration: 0.12).delay(Double(i) * 0.04), value: level)
             }
         }
-    }
-
-    private func barHeight(for index: Int) -> CGFloat {
-        let base: CGFloat  = 3
-        let maxH: CGFloat  = 18
-        let shape: [Float] = [0.5, 0.8, 1.0, 0.8, 0.5]
-        let h = base + CGFloat(level * shape[index]) * (maxH - base)
-        return Swift.max(base, h)
-    }
-}
-
-// MARK: - LangButton
-
-struct LangButton: View {
-    let title:      String
-    let flag:       String
-    let isSelected: Bool
-    let color:      Color
-    let action:     () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 2) {
-                Text(flag).font(.title3)
-                Text(title)
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .foregroundStyle(isSelected ? color : .white.opacity(0.35))
-            }
-            .frame(width: 84, height: 56)
-            .background(isSelected ? color.opacity(0.18) : Color.white.opacity(0.05))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(isSelected ? color.opacity(0.55) : Color.white.opacity(0.08),
-                            lineWidth: isSelected ? 1.5 : 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-        }
-        .buttonStyle(.plain)
-        .animation(.easeInOut(duration: 0.15), value: isSelected)
     }
 }
 
@@ -308,7 +312,9 @@ struct HistoryView: View {
             }
             .navigationTitle("Historial").navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Cerrar") { dismiss() }.foregroundStyle(.white) } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                Button("Cerrar") { dismiss() }.foregroundStyle(.white)
+            }}
             .sheet(item: $selected) { ConversationDetailView(conversation: $0) }
         }
     }
@@ -325,7 +331,7 @@ struct ConversationDetailView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(conversation.messages) { msg in
-                            HStack(spacing: 12) {
+                            HStack(alignment: .top, spacing: 12) {
                                 Text(msg.sourceLang == "en" ? "🇺🇸" : "🇪🇸")
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(msg.original).font(.subheadline).foregroundStyle(.white)
@@ -342,7 +348,9 @@ struct ConversationDetailView: View {
             }
             .navigationTitle(conversation.title).navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Cerrar") { dismiss() }.foregroundStyle(.white) } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                Button("Cerrar") { dismiss() }.foregroundStyle(.white)
+            }}
         }
     }
 }
