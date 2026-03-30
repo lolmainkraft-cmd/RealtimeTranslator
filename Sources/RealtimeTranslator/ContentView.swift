@@ -17,17 +17,14 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color(white: 0.07).ignoresSafeArea()
-
+            Color(white: 0.06).ignoresSafeArea()
             VStack(spacing: 0) {
                 header
-                chatArea
+                panels
                 bottomBar
             }
         }
-        .sheet(isPresented: $showHistory) {
-            HistoryView(store: engine.store)
-        }
+        .sheet(isPresented: $showHistory) { HistoryView(store: engine.store) }
         .translationTask(configENtoES) { engine.setSessionENtoES($0) }
         .translationTask(configEStoEN) { engine.setSessionEStoEN($0) }
         .task { _ = await engine.requestPermissions() }
@@ -36,330 +33,212 @@ struct ContentView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 12) {
-
-            // Botón historial
+        HStack(spacing: 10) {
             Button { showHistory = true } label: {
                 Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90")
-                    .font(.system(size: 18))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .frame(width: 44, height: 44)
+                    .font(.system(size: 17))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .frame(width: 40, height: 40)
             }
 
             Spacer()
 
-            // Dos botones de idioma
-            HStack(spacing: 10) {
-                LangButton(
-                    title: "INGLÉS",
-                    flag: "🇺🇸",
-                    isSelected: engine.direction == .enToEs,
-                    color: .blue
-                ) {
-                    if engine.direction != .enToEs { engine.toggleDirection() }
-                }
+            HStack(spacing: 8) {
+                LangButton(title: "INGLÉS",   flag: "🇺🇸",
+                           isSelected: engine.direction == .enToEs, color: .blue)
+                { engine.setDirection(.enToEs) }
 
-                LangButton(
-                    title: "ESPAÑOL",
-                    flag: "🇪🇸",
-                    isSelected: engine.direction == .esToEn,
-                    color: .green
-                ) {
-                    if engine.direction != .esToEn { engine.toggleDirection() }
-                }
+                LangButton(title: "ESPAÑOL",  flag: "🇪🇸",
+                           isSelected: engine.direction == .esToEn, color: .green)
+                { engine.setDirection(.esToEn) }
             }
             .disabled(!engine.isSessionReady)
 
             Spacer()
-
-            // Placeholder derecho
-            Color.clear.frame(width: 44, height: 44)
+            Color.clear.frame(width: 40, height: 40)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color(white: 0.1))
+        .padding(.vertical, 8)
+        .background(Color(white: 0.11))
     }
 
-    // MARK: - Chat area
+    // MARK: - Dos paneles
 
-    private var chatArea: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    if engine.messages.isEmpty && !engine.isListening {
-                        emptyState
-                    }
-                    ForEach(engine.messages) { msg in
-                        BubbleView(message: msg).id(msg.id)
-                    }
-                    // Frase en curso
-                    if engine.isListening && !engine.currentOriginal.isEmpty {
-                        LiveBubble(
-                            original:   engine.currentOriginal,
-                            translated: engine.currentTranslated,
-                            direction:  engine.direction
-                        )
-                        .id("live")
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-            .onChange(of: engine.messages.count) {
-                withAnimation { proxy.scrollTo(engine.messages.last?.id, anchor: .bottom) }
-            }
-            .onChange(of: engine.currentOriginal) {
-                withAnimation { proxy.scrollTo("live", anchor: .bottom) }
+    private var panels: some View {
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                // Panel inglés (arriba)
+                TranslationPanel(
+                    flag:      "🇺🇸",
+                    langLabel: "INGLÉS",
+                    messages:  engine.messages.map { ($0.english, $0.id) },
+                    liveText:  engine.liveEnglish,
+                    isInput:   engine.direction == .enToEs && engine.isListening,
+                    isOutput:  engine.direction == .esToEn && engine.isSpeaking,
+                    audioLevel: engine.direction == .enToEs ? engine.audioLevel : 0,
+                    color:     .blue,
+                    height:    geo.size.height / 2
+                )
+
+                Divider().background(Color.white.opacity(0.08))
+
+                // Panel español (abajo)
+                TranslationPanel(
+                    flag:      "🇪🇸",
+                    langLabel: "ESPAÑOL",
+                    messages:  engine.messages.map { ($0.spanish, $0.id) },
+                    liveText:  engine.liveSpanish,
+                    isInput:   engine.direction == .esToEn && engine.isListening,
+                    isOutput:  engine.direction == .enToEs && engine.isSpeaking,
+                    audioLevel: engine.direction == .esToEn ? engine.audioLevel : 0,
+                    color:     .green,
+                    height:    geo.size.height / 2
+                )
             }
         }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "waveform.circle")
-                .font(.system(size: 52))
-                .foregroundStyle(.white.opacity(0.12))
-            Text("Selecciona la dirección y pulsa el micrófono")
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.3))
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 80)
     }
 
     // MARK: - Bottom bar
 
     private var bottomBar: some View {
-        VStack(spacing: 10) {
-
-            // Estado
-            if engine.isListening || engine.isSpeaking {
-                Text(engine.isSpeaking ? "Traduciendo..." : "Escuchando...")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.45))
-            }
-
+        VStack(spacing: 6) {
             if let err = engine.errorMessage {
-                Text(err).font(.caption).foregroundStyle(.red).multilineTextAlignment(.center).padding(.horizontal)
+                Text(err).font(.caption).foregroundStyle(.red).padding(.horizontal)
             }
 
-            // Micrófono
             Button {
                 if engine.isListening { engine.stopListening() }
                 else { try? engine.startListening() }
             } label: {
                 ZStack {
                     Circle()
-                        .fill(engine.isListening ? Color.red.opacity(0.18) : Color.white.opacity(0.1))
-                        .frame(width: 76, height: 76)
+                        .fill(engine.isListening ? Color.red.opacity(0.2) : Color.white.opacity(0.1))
+                        .frame(width: 72, height: 72)
                     Image(systemName: engine.isListening ? "stop.fill" : "mic.fill")
-                        .font(.system(size: 30, weight: .semibold))
+                        .font(.system(size: 28, weight: .semibold))
                         .foregroundStyle(engine.isListening ? .red : .white)
                 }
             }
             .disabled(!engine.isSessionReady)
             .opacity(engine.isSessionReady ? 1 : 0.35)
             .buttonStyle(.plain)
-            .scaleEffect(engine.isListening ? 1.06 : 1.0)
+            .scaleEffect(engine.isListening && !engine.isSpeaking ? 1.06 : 1.0)
             .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: engine.isListening)
 
             if !engine.isSessionReady {
                 Text("Descargando modelos...").font(.caption2).foregroundStyle(.white.opacity(0.3))
             }
         }
-        .padding(.vertical, 16)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity)
-        .background(Color(white: 0.1))
+        .background(Color(white: 0.11))
     }
 }
 
-// MARK: - BubbleView
+// MARK: - TranslationPanel
 
-struct BubbleView: View {
-    let message: TranslationMessage
-
-    var isLeft: Bool  { message.direction == .enToEs }
-    var color: Color  { isLeft ? .blue : .green }
-    var sourceFlag: String { isLeft ? "🇺🇸" : "🇪🇸" }
-    var targetFlag: String { isLeft ? "🇪🇸" : "🇺🇸" }
-
-    var body: some View {
-        VStack(alignment: isLeft ? .leading : .trailing, spacing: 4) {
-            // Timestamp
-            HStack {
-                if !isLeft { Spacer() }
-                Text(sourceFlag + " " + message.timestamp.formatted(.dateTime.hour().minute().second()))
-                    .font(.caption2).foregroundStyle(.white.opacity(0.28))
-                if isLeft { Spacer() }
-            }
-            HStack(alignment: .top) {
-                if !isLeft { Spacer(minLength: 40) }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(message.original)
-                        .font(.body)
-                        .foregroundStyle(.white)
-                    HStack(spacing: 4) {
-                        Text(targetFlag).font(.caption)
-                        Text(message.translated)
-                            .font(.body.italic())
-                            .foregroundStyle(color.opacity(0.9))
-                    }
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(color.opacity(0.1))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(color.opacity(0.3), lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                if isLeft { Spacer(minLength: 40) }
-            }
-        }
-    }
-}
-
-// MARK: - LiveBubble
-
-struct LiveBubble: View {
-    let original:   String
-    let translated: String
-    let direction:  TranslationDirection
-
-    var isLeft: Bool  { direction == .enToEs }
-    var color: Color  { isLeft ? .blue : .green }
+struct TranslationPanel: View {
+    let flag:       String
+    let langLabel:  String
+    let messages:   [(text: String, id: UUID)]
+    let liveText:   String
+    let isInput:    Bool     // escuchando en este idioma
+    let isOutput:   Bool     // reproduciendo en este idioma
+    let audioLevel: Float
+    let color:      Color
+    let height:     CGFloat
 
     var body: some View {
-        HStack {
-            if !isLeft { Spacer(minLength: 40) }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(original)
-                    .font(.body)
-                    .foregroundStyle(.white.opacity(0.5))
-                if !translated.isEmpty {
-                    Text(translated)
-                        .font(.body.italic())
-                        .foregroundStyle(color.opacity(0.6))
+        VStack(spacing: 0) {
+            // Cabecera del panel
+            HStack(spacing: 8) {
+                Text(flag).font(.title3)
+                Text(langLabel)
+                    .font(.caption.bold())
+                    .foregroundStyle(color)
+                Spacer()
+                if isInput {
+                    WaveformView(level: audioLevel, color: color)
+                        .frame(width: 48, height: 18)
+                }
+                if isOutput {
+                    Label("", systemImage: "speaker.wave.2.fill")
+                        .font(.caption)
+                        .foregroundStyle(color.opacity(0.7))
+                        .symbolEffect(.variableColor, isActive: isOutput)
                 }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
             .background(color.opacity(0.06))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(color.opacity(0.15), lineWidth: 1))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            if isLeft { Spacer(minLength: 40) }
-        }
-    }
-}
 
-// MARK: - HistoryView
-
-struct HistoryView: View {
-    let store: ConversationStore
-    @State private var selected: StoredConversation?
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                Color(white: 0.07).ignoresSafeArea()
-                if store.conversations.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "tray")
-                            .font(.system(size: 48)).foregroundStyle(.white.opacity(0.12))
-                        Text("Sin conversaciones guardadas")
-                            .font(.subheadline).foregroundStyle(.white.opacity(0.3))
-                    }
-                } else {
-                    List {
-                        ForEach(store.conversations) { conv in
-                            Button { selected = conv } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(conv.title)
-                                        .font(.subheadline.bold()).foregroundStyle(.white)
-                                    Text(conv.preview)
-                                        .font(.caption).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
-                                    Text("\(conv.messages.count) mensajes")
-                                        .font(.caption2).foregroundStyle(.white.opacity(0.25))
-                                }
-                                .padding(.vertical, 4)
-                            }
-                            .listRowBackground(Color(white: 0.12))
-                        }
-                        .onDelete { store.delete(at: $0) }
-                    }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
-                }
-            }
-            .navigationTitle("Historial")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Cerrar") { dismiss() }.foregroundStyle(.white)
-                }
-            }
-            .sheet(item: $selected) { ConversationDetailView(conversation: $0) }
-        }
-    }
-}
-
-// MARK: - ConversationDetailView
-
-struct ConversationDetailView: View {
-    let conversation: StoredConversation
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                Color(white: 0.07).ignoresSafeArea()
+            // Contenido
+            ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(conversation.messages) { msg in
-                            StoredBubble(message: msg)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(messages, id: \.id) { item in
+                            Text(item.text)
+                                .font(.body)
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .id(item.id)
+                        }
+                        // Texto en vivo (parcial)
+                        if !liveText.isEmpty {
+                            Text(liveText)
+                                .font(.body)
+                                .foregroundStyle(color.opacity(0.5))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .id("live")
+                        }
+                        if messages.isEmpty && liveText.isEmpty {
+                            Text("—")
+                                .font(.body)
+                                .foregroundStyle(.white.opacity(0.15))
                         }
                     }
-                    .padding(16)
+                    .padding(14)
                 }
-            }
-            .navigationTitle(conversation.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Cerrar") { dismiss() }.foregroundStyle(.white)
+                .onChange(of: messages.count) {
+                    withAnimation { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
+                }
+                .onChange(of: liveText) {
+                    withAnimation { proxy.scrollTo("live", anchor: .bottom) }
                 }
             }
         }
+        .frame(height: height)
+        .background(Color(white: 0.07))
     }
 }
 
-struct StoredBubble: View {
-    let message: StoredMessage
-    var isLeft: Bool  { message.sourceLang == "en" }
-    var color: Color  { isLeft ? .blue : .green }
+// MARK: - WaveformView
+
+struct WaveformView: View {
+    let level: Float
+    let color: Color
+
+    private let barCount = 5
 
     var body: some View {
-        VStack(alignment: isLeft ? .leading : .trailing, spacing: 4) {
-            HStack {
-                if !isLeft { Spacer() }
-                Text((isLeft ? "🇺🇸 " : "🇪🇸 ") + message.timestamp.formatted(.dateTime.hour().minute()))
-                    .font(.caption2).foregroundStyle(.white.opacity(0.28))
-                if isLeft { Spacer() }
-            }
-            HStack {
-                if !isLeft { Spacer(minLength: 40) }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(message.original).font(.body).foregroundStyle(.white)
-                    Text(message.translated).font(.body.italic()).foregroundStyle(color.opacity(0.9))
-                }
-                .padding(14)
-                .background(color.opacity(0.1))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(color.opacity(0.3), lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                if isLeft { Spacer(minLength: 40) }
+        HStack(spacing: 2) {
+            ForEach(0..<barCount, id: \.self) { i in
+                let delay = Double(i) * 0.08
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(color)
+                    .frame(width: 4, height: barHeight(for: i))
+                    .animation(.easeInOut(duration: 0.15).delay(delay), value: level)
             }
         }
+    }
+
+    private func barHeight(for index: Int) -> CGFloat {
+        let base: CGFloat = 3
+        let max:  CGFloat = 18
+        // Centro más alto, extremos más bajos
+        let shape: [Float] = [0.5, 0.8, 1.0, 0.8, 0.5]
+        let h = base + CGFloat(level * shape[index]) * (max - base)
+        return max(base, h)
     }
 }
 
@@ -374,22 +253,98 @@ struct LangButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
+            VStack(spacing: 2) {
                 Text(flag).font(.title3)
                 Text(title)
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundStyle(isSelected ? color : .white.opacity(0.4))
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundStyle(isSelected ? color : .white.opacity(0.35))
             }
-            .frame(width: 88, height: 60)
-            .background(isSelected ? color.opacity(0.2) : Color.white.opacity(0.05))
+            .frame(width: 84, height: 56)
+            .background(isSelected ? color.opacity(0.18) : Color.white.opacity(0.05))
             .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .stroke(isSelected ? color.opacity(0.6) : Color.white.opacity(0.1), lineWidth: isSelected ? 2 : 1)
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? color.opacity(0.55) : Color.white.opacity(0.08),
+                            lineWidth: isSelected ? 1.5 : 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
         .animation(.easeInOut(duration: 0.15), value: isSelected)
+    }
+}
+
+// MARK: - History
+
+struct HistoryView: View {
+    let store: ConversationStore
+    @State private var selected: StoredConversation?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color(white: 0.07).ignoresSafeArea()
+                if store.conversations.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "tray").font(.system(size: 44)).foregroundStyle(.white.opacity(0.12))
+                        Text("Sin conversaciones guardadas").font(.subheadline).foregroundStyle(.white.opacity(0.3))
+                    }
+                } else {
+                    List {
+                        ForEach(store.conversations) { conv in
+                            Button { selected = conv } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(conv.title).font(.subheadline.bold()).foregroundStyle(.white)
+                                    Text(conv.preview).font(.caption).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                                    Text("\(conv.messages.count) frases").font(.caption2).foregroundStyle(.white.opacity(0.25))
+                                }
+                                .padding(.vertical, 4)
+                            }
+                            .listRowBackground(Color(white: 0.12))
+                        }
+                        .onDelete { store.delete(at: $0) }
+                    }
+                    .listStyle(.plain).scrollContentBackground(.hidden)
+                }
+            }
+            .navigationTitle("Historial").navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Cerrar") { dismiss() }.foregroundStyle(.white) } }
+            .sheet(item: $selected) { ConversationDetailView(conversation: $0) }
+        }
+    }
+}
+
+struct ConversationDetailView: View {
+    let conversation: StoredConversation
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color(white: 0.07).ignoresSafeArea()
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(conversation.messages) { msg in
+                            HStack(spacing: 12) {
+                                Text(msg.sourceLang == "en" ? "🇺🇸" : "🇪🇸")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(msg.original).font(.subheadline).foregroundStyle(.white)
+                                    Text(msg.translated).font(.subheadline.italic())
+                                        .foregroundStyle(msg.sourceLang == "en" ? Color.blue.opacity(0.8) : Color.green.opacity(0.8))
+                                }
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            Divider().background(.white.opacity(0.06)).padding(.leading, 16)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(conversation.title).navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Cerrar") { dismiss() }.foregroundStyle(.white) } }
+        }
     }
 }
 
