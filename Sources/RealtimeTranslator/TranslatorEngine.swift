@@ -257,7 +257,7 @@ final class TranslatorEngine: NSObject {
             // Reiniciar sesión para que la siguiente frase empiece desde cero
             restartRecognitionTask()
         } catch {
-            log("Error traducción: \(error.localizedDescription)")
+            log("ERROR traduccion: \(error.localizedDescription) | texto: \"\(trimmed.prefix(30))\"")
         }
     }
 
