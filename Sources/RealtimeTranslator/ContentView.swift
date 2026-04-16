@@ -1,5 +1,14 @@
 import SwiftUI
 
+// Color por interlocutor: amarillo = tú (español), azul = el otro (inglés)
+private extension Color {
+    static let speakerES = Color.yellow
+    static let speakerEN = Color.blue
+    static func forSource(_ sourceLang: String) -> Color {
+        sourceLang == "es" ? .speakerES : .speakerEN
+    }
+}
+
 struct ContentView: View {
 
     @State private var engine      = TranslatorEngine()
@@ -68,29 +77,31 @@ struct ContentView: View {
     private var panels: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
+                // Panel superior: inglés (texto EN original o traducción EN del español)
                 LangPanel(
                     flag:        "🇺🇸",
                     label:       "INGLÉS",
-                    messages:    engine.messages.map { $0.english },
+                    messages:    engine.messages.map { ($0.english, $0.sourceLang) },
                     liveText:    engine.liveEnglish,
+                    liveColor:   .speakerEN,
                     isListening: engine.activeMic == .english,
                     isSpeaking:  engine.activeMic == .spanish && engine.isSpeaking,
                     audioLevel:  engine.activeMic == .english ? engine.audioLevel : 0,
-                    color:       .blue,
                     height:      geo.size.height / 2
                 )
 
                 Divider().background(Color.white.opacity(0.08))
 
+                // Panel inferior: español (texto ES original o traducción ES del inglés)
                 LangPanel(
                     flag:        "🇪🇸",
                     label:       "ESPAÑOL",
-                    messages:    engine.messages.map { $0.spanish },
+                    messages:    engine.messages.map { ($0.spanish, $0.sourceLang) },
                     liveText:    engine.liveSpanish,
+                    liveColor:   .speakerES,
                     isListening: engine.activeMic == .spanish,
                     isSpeaking:  engine.activeMic == .english && engine.isSpeaking,
                     audioLevel:  engine.activeMic == .spanish ? engine.audioLevel : 0,
-                    color:       .green,
                     height:      geo.size.height / 2
                 )
             }
@@ -104,7 +115,6 @@ struct ContentView: View {
             if let err = engine.errorMessage {
                 Text(err).font(.caption).foregroundStyle(.red).padding(.horizontal)
             }
-
             if !engine.isReady {
                 Text(engine.statusLabel)
                     .font(.caption2).foregroundStyle(.white.opacity(0.35))
@@ -116,7 +126,7 @@ struct ContentView: View {
                     label:      "INGLÉS",
                     hint:       "🎧 AirPods",
                     isActive:   engine.activeMic == .english,
-                    color:      .blue,
+                    color:      .speakerEN,
                     audioLevel: engine.activeMic == .english ? engine.audioLevel : 0
                 ) { engine.tapEnglishMic() }
 
@@ -125,7 +135,7 @@ struct ContentView: View {
                     label:      "ESPAÑOL",
                     hint:       "🔊 Altavoz",
                     isActive:   engine.activeMic == .spanish,
-                    color:      .green,
+                    color:      .speakerES,
                     audioLevel: engine.activeMic == .spanish ? engine.audioLevel : 0
                 ) { engine.tapSpanishMic() }
             }
@@ -143,49 +153,51 @@ struct ContentView: View {
 struct LangPanel: View {
     let flag:        String
     let label:       String
-    let messages:    [String]
+    let messages:    [(text: String, sourceLang: String)]
     let liveText:    String
+    let liveColor:   Color
     let isListening: Bool
     let isSpeaking:  Bool
     let audioLevel:  Float
-    let color:       Color
     let height:      CGFloat
 
     var body: some View {
         VStack(spacing: 0) {
+            // Cabecera
             HStack(spacing: 8) {
                 Text(flag).font(.title3)
-                Text(label).font(.caption.bold()).foregroundStyle(color)
+                Text(label).font(.caption.bold()).foregroundStyle(.white.opacity(0.5))
                 Spacer()
                 if isListening {
-                    WaveformView(level: audioLevel, color: color)
+                    WaveformView(level: audioLevel, color: liveColor)
                         .frame(width: 44, height: 16)
                 }
                 if isSpeaking {
                     Image(systemName: "speaker.wave.2.fill")
                         .font(.caption)
-                        .foregroundStyle(color.opacity(0.7))
+                        .foregroundStyle(liveColor.opacity(0.7))
                         .symbolEffect(.variableColor.iterative, isActive: isSpeaking)
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(color.opacity(0.07))
+            .background(Color.white.opacity(0.04))
 
+            // Mensajes
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        ForEach(Array(messages.enumerated()), id: \.offset) { i, text in
-                            Text(text)
+                        ForEach(Array(messages.enumerated()), id: \.offset) { i, msg in
+                            Text(msg.text)
                                 .font(.body)
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Color.forSource(msg.sourceLang))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .id(i)
                         }
                         if !liveText.isEmpty {
                             Text(liveText)
                                 .font(.body)
-                                .foregroundStyle(color.opacity(0.5))
+                                .foregroundStyle(liveColor.opacity(0.45))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .id("live")
                         }
@@ -230,7 +242,7 @@ struct MicButton: View {
                             .animation(.easeOut(duration: 0.1), value: audioLevel)
                     }
                     Circle()
-                        .fill(isActive ? color.opacity(0.25) : Color.white.opacity(0.08))
+                        .fill(isActive ? color.opacity(0.2) : Color.white.opacity(0.08))
                         .frame(width: 72, height: 72)
                         .overlay(
                             Circle().stroke(
@@ -335,9 +347,12 @@ struct ConversationDetailView: View {
                             HStack(alignment: .top, spacing: 12) {
                                 Text(msg.sourceLang == "en" ? "🇺🇸" : "🇪🇸")
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(msg.original).font(.subheadline).foregroundStyle(.white)
-                                    Text(msg.translated).font(.subheadline.italic())
-                                        .foregroundStyle(msg.sourceLang == "en" ? Color.blue.opacity(0.8) : Color.green.opacity(0.8))
+                                    Text(msg.original)
+                                        .font(.subheadline)
+                                        .foregroundStyle(Color.forSource(msg.sourceLang))
+                                    Text(msg.translated)
+                                        .font(.subheadline.italic())
+                                        .foregroundStyle(Color.forSource(msg.sourceLang).opacity(0.6))
                                 }
                                 Spacer()
                             }

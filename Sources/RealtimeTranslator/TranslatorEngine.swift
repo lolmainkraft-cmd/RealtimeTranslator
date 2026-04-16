@@ -11,6 +11,7 @@ struct TranslationMessage: Identifiable {
     let id        = UUID()
     let english:    String
     let spanish:    String
+    let sourceLang: String   // "en" | "es"  → determina el color en la UI
     let timestamp = Date()
 }
 
@@ -240,15 +241,15 @@ final class TranslatorEngine: NSObject {
             let translated = try await azureTranslator.translate(trimmed, from: from, to: to)
             log("OK: \"\(translated.prefix(40))\"")
 
-            if isEN {
-                messages.append(TranslationMessage(english: trimmed, spanish: translated))
-                currentConversation.messages.append(
-                    StoredMessage(original: trimmed, translated: translated, sourceLang: "en"))
-            } else {
-                messages.append(TranslationMessage(english: translated, spanish: trimmed))
-                currentConversation.messages.append(
-                    StoredMessage(original: trimmed, translated: translated, sourceLang: "es"))
-            }
+            let src = isEN ? "en" : "es"
+            messages.append(TranslationMessage(
+                english:    isEN ? trimmed : translated,
+                spanish:    isEN ? translated : trimmed,
+                sourceLang: src
+            ))
+            currentConversation.messages.append(
+                StoredMessage(original: trimmed, translated: translated, sourceLang: src)
+            )
             store.upsert(currentConversation)
             liveEnglish = ""
             liveSpanish = ""
