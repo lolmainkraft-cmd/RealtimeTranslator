@@ -16,6 +16,7 @@ struct AzureTranslatorClient {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue(key, forHTTPHeaderField: "Ocp-Apim-Subscription-Key")
+        req.setValue("westeurope", forHTTPHeaderField: "Ocp-Apim-Subscription-Region")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode([["Text": trimmed]])
         req.timeoutInterval = 10
@@ -26,9 +27,14 @@ struct AzureTranslatorClient {
             struct Translation: Decodable { let text: String }
             let translations: [Translation]
         }
+
         guard let results = try? JSONDecoder().decode([Result].self, from: data),
               let translated = results.first?.translations.first?.text
-        else { return text }
+        else {
+            let raw = String(data: data, encoding: .utf8) ?? "?"
+            print("Azure Translator error response: \(raw)")
+            throw URLError(.badServerResponse)
+        }
 
         return translated
     }

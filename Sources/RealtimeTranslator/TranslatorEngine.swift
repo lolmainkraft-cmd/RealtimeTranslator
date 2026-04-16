@@ -253,6 +253,8 @@ final class TranslatorEngine: NSObject {
             liveEnglish = ""
             liveSpanish = ""
             speak(translated, voice: voice, toSpeaker: toSpeaker)
+            // Reiniciar sesión para que la siguiente frase empiece desde cero
+            restartRecognitionTask()
         } catch {
             log("Error traducción: \(error.localizedDescription)")
         }
