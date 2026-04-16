@@ -167,27 +167,31 @@ final class TranslatorEngine: NSObject {
         activeRequest?.shouldReportPartialResults = true
 
         activeTask = recognizer.recognitionTask(with: activeRequest!) { [weak self] result, error in
-            guard let self else { return }
+            // Extraer valores primitivos ANTES de cruzar al actor principal
+            let errorCode = (error as NSError?)?.code
+            let text      = result?.bestTranscription.formattedString ?? ""
+            let isFinal   = result?.isFinal ?? false
 
-            if (error as NSError?)?.code == 1110 {
-                Task { @MainActor in self.restartRecognitionTask() }
-                return
-            }
-            guard let result else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
 
-            let text    = result.bestTranscription.formattedString
-            let isFinal = result.isFinal
+                if errorCode == 1110 {
+                    self.restartRecognitionTask()
+                    return
+                }
+                guard !text.isEmpty else { return }
 
-            Task { @MainActor in
                 self.updateLiveText(text)
                 self.debounceTask?.cancel()
 
                 if isFinal {
-                    self.debounceTask = Task { await self.handleFinalText(text) }
+                    self.debounceTask = Task { @MainActor [weak self] in
+                        await self?.handleFinalText(text)
+                    }
                 } else {
-                    self.debounceTask = Task {
+                    self.debounceTask = Task { @MainActor [weak self] in
                         try? await Task.sleep(for: .milliseconds(1500))
-                        guard !Task.isCancelled else { return }
+                        guard !Task.isCancelled, let self else { return }
                         let silence = self.silenceStart.map { Date().timeIntervalSince($0) } ?? 0
                         if silence >= 1.2 { await self.handleFinalText(text) }
                     }
