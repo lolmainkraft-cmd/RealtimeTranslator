@@ -1,10 +1,5 @@
 name: RealtimeTranslator
 
-packages:
-  WhisperKit:
-    url: https://github.com/argmaxinc/WhisperKit
-    from: "0.9.0"
-
 options:
   bundleIdPrefix: com.realtimetranslator
   deploymentTarget:
@@ -36,10 +31,6 @@ targets:
 
     entitlements:
       path: Resources/RealtimeTranslator.entitlements
-
-    dependencies:
-      - package: WhisperKit
-        product: WhisperKit
 
     settings:
       base:

@@ -1,19 +1,9 @@
 import SwiftUI
-import Translation
 
 struct ContentView: View {
 
     @State private var engine      = TranslatorEngine()
     @State private var showHistory = false
-
-    private let configENtoES = TranslationSession.Configuration(
-        source: Locale.Language(identifier: "en"),
-        target: Locale.Language(identifier: "es")
-    )
-    private let configEStoEN = TranslationSession.Configuration(
-        source: Locale.Language(identifier: "es"),
-        target: Locale.Language(identifier: "en")
-    )
 
     var body: some View {
         ZStack {
@@ -26,12 +16,10 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showHistory) { HistoryView(store: engine.store) }
         .overlay(alignment: .bottom) { debugOverlay }
-        .translationTask(configENtoES) { engine.setSessionENtoES($0) }
-        .translationTask(configEStoEN) { engine.setSessionEStoEN($0) }
         .task { await engine.boot() }
     }
 
-    // MARK: - Debug overlay (quitar en producción)
+    // MARK: - Debug overlay
 
     private var debugOverlay: some View {
         ScrollViewReader { proxy in
@@ -80,32 +68,30 @@ struct ContentView: View {
     private var panels: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
-                // Panel inglés (arriba)
                 LangPanel(
-                    flag:       "🇺🇸",
-                    label:      "INGLÉS",
-                    messages:   engine.messages.map { $0.english },
-                    liveText:   engine.liveEnglish,
+                    flag:        "🇺🇸",
+                    label:       "INGLÉS",
+                    messages:    engine.messages.map { $0.english },
+                    liveText:    engine.liveEnglish,
                     isListening: engine.activeMic == .english,
                     isSpeaking:  engine.activeMic == .spanish && engine.isSpeaking,
                     audioLevel:  engine.activeMic == .english ? engine.audioLevel : 0,
-                    color:      .blue,
-                    height:     geo.size.height / 2
+                    color:       .blue,
+                    height:      geo.size.height / 2
                 )
 
                 Divider().background(Color.white.opacity(0.08))
 
-                // Panel español (abajo)
                 LangPanel(
-                    flag:       "🇪🇸",
-                    label:      "ESPAÑOL",
-                    messages:   engine.messages.map { $0.spanish },
-                    liveText:   engine.liveSpanish,
+                    flag:        "🇪🇸",
+                    label:       "ESPAÑOL",
+                    messages:    engine.messages.map { $0.spanish },
+                    liveText:    engine.liveSpanish,
                     isListening: engine.activeMic == .spanish,
                     isSpeaking:  engine.activeMic == .english && engine.isSpeaking,
                     audioLevel:  engine.activeMic == .spanish ? engine.audioLevel : 0,
-                    color:      .green,
-                    height:     geo.size.height / 2
+                    color:       .green,
+                    height:      geo.size.height / 2
                 )
             }
         }
@@ -120,29 +106,26 @@ struct ContentView: View {
             }
 
             if !engine.isReady {
-                Text(engine.whisper.isReady ? "Cargando modelos de traducción..." : engine.whisper.statusLabel)
+                Text(engine.statusLabel)
                     .font(.caption2).foregroundStyle(.white.opacity(0.35))
             }
 
             HStack(spacing: 32) {
-
-                // Mic inglés → traduce a español en tiempo real → AirPods
                 MicButton(
-                    flag:      "🇺🇸",
-                    label:     "INGLÉS",
-                    hint:      "🎧 AirPods",
-                    isActive:  engine.activeMic == .english,
-                    color:     .blue,
+                    flag:       "🇺🇸",
+                    label:      "INGLÉS",
+                    hint:       "🎧 AirPods",
+                    isActive:   engine.activeMic == .english,
+                    color:      .blue,
                     audioLevel: engine.activeMic == .english ? engine.audioLevel : 0
                 ) { engine.tapEnglishMic() }
 
-                // Mic español → traduce a inglés al terminar → altavoz
                 MicButton(
-                    flag:      "🇪🇸",
-                    label:     "ESPAÑOL",
-                    hint:      "🔊 Altavoz",
-                    isActive:  engine.activeMic == .spanish,
-                    color:     .green,
+                    flag:       "🇪🇸",
+                    label:      "ESPAÑOL",
+                    hint:       "🔊 Altavoz",
+                    isActive:   engine.activeMic == .spanish,
+                    color:      .green,
                     audioLevel: engine.activeMic == .spanish ? engine.audioLevel : 0
                 ) { engine.tapSpanishMic() }
             }
@@ -170,7 +153,6 @@ struct LangPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Cabecera del panel
             HStack(spacing: 8) {
                 Text(flag).font(.title3)
                 Text(label).font(.caption.bold()).foregroundStyle(color)
@@ -190,7 +172,6 @@ struct LangPanel: View {
             .padding(.vertical, 8)
             .background(color.opacity(0.07))
 
-            // Texto
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
@@ -241,7 +222,6 @@ struct MicButton: View {
         Button(action: action) {
             VStack(spacing: 6) {
                 ZStack {
-                    // Anillo exterior pulsante cuando activo
                     if isActive {
                         Circle()
                             .stroke(color.opacity(0.3), lineWidth: 3)
@@ -249,7 +229,6 @@ struct MicButton: View {
                             .scaleEffect(1.0 + CGFloat(audioLevel) * 0.18)
                             .animation(.easeOut(duration: 0.1), value: audioLevel)
                     }
-
                     Circle()
                         .fill(isActive ? color.opacity(0.25) : Color.white.opacity(0.08))
                         .frame(width: 72, height: 72)
@@ -259,7 +238,6 @@ struct MicButton: View {
                                 lineWidth: isActive ? 2 : 1
                             )
                         )
-
                     VStack(spacing: 2) {
                         Text(flag).font(.title2)
                         Image(systemName: isActive ? "stop.fill" : "mic.fill")
@@ -267,11 +245,9 @@ struct MicButton: View {
                             .foregroundStyle(isActive ? color : .white.opacity(0.6))
                     }
                 }
-
                 Text(label)
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(isActive ? color : .white.opacity(0.4))
-
                 Text(hint)
                     .font(.system(size: 10))
                     .foregroundStyle(.white.opacity(0.3))

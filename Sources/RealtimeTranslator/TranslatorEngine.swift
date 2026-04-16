@@ -1,7 +1,6 @@
 import Foundation
 import AVFoundation
 import Speech
-import Translation
 import Observation
 
 // MARK: - Models
@@ -26,8 +25,8 @@ final class TranslatorEngine: NSObject {
     var isSpeaking   = false
     var isReady      = false
     var audioLevel:  Float = 0
-    var statusLabel  = ""
-    var debugLog:    [String] = []   // visible en pantalla
+    var statusLabel  = "Solicitando permisos..."
+    var debugLog:    [String] = []
 
     // Paneles en vivo
     var liveEnglish  = ""
@@ -35,17 +34,14 @@ final class TranslatorEngine: NSObject {
     var messages:    [TranslationMessage] = []
     var errorMessage: String?
 
-    // Whisper (mic inglés)
-    let whisper = WhisperTranscriber()
+    // SFSpeechRecognizer — uno por idioma
+    private let recognizerEN = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
+    private let recognizerES = SFSpeechRecognizer(locale: Locale(identifier: "es-ES"))!
+    private var activeRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var activeTask:    SFSpeechRecognitionTask?
 
-    // SFSpeechRecognizer (mic español)
-    private let recognizerES = SFSpeechRecognizer(locale: Locale(identifier: "es-MX"))!
-    private var requestES:   SFSpeechAudioBufferRecognitionRequest?
-    private var taskES:      SFSpeechRecognitionTask?
-
-    // Sesiones de traducción
-    private var sessionENtoES: TranslationSession?
-    private var sessionEStoEN: TranslationSession?
+    // Azure Translator
+    private let azureTranslator = AzureTranslatorClient()
 
     // Historia
     var store = ConversationStore()
@@ -54,15 +50,11 @@ final class TranslatorEngine: NSObject {
     private let audioEngine = AVAudioEngine()
     private let synthesizer = AVSpeechSynthesizer()
 
-    // VAD + chunking
-    private var silenceStart:   Date? = nil
-    private var debounceTask:   Task<Void, Never>?
-    private var whisperLoopTask: Task<Void, Never>?
-    private var blockMic        = false
-    private var isTranslating   = false
-
-    // Streaming EN: delta tracking
-    private var streamedSoFar   = ""
+    // VAD + debounce
+    private var silenceStart: Date? = nil
+    private var debounceTask: Task<Void, Never>?
+    private var blockMic      = false
+    private var isTranslating = false
 
     override init() {
         super.init()
@@ -72,11 +64,11 @@ final class TranslatorEngine: NSObject {
     // MARK: - Boot
 
     func boot() async {
-        _ = await requestPermissions()
-        log("Iniciando WhisperKit...")
-        await whisper.setup()
-        log(whisper.isReady ? "Whisper listo ✓" : "Whisper FALLÓ: \(whisper.statusLabel)")
-        updateReadyState()
+        let granted = await requestPermissions()
+        guard granted else { return }
+        isReady     = true
+        statusLabel = ""
+        log("Listo")
     }
 
     private func log(_ msg: String) {
@@ -84,11 +76,6 @@ final class TranslatorEngine: NSObject {
         debugLog.append("[\(ts)] \(msg)")
         if debugLog.count > 30 { debugLog.removeFirst() }
         print("DEBUG: \(msg)")
-    }
-
-    private func updateReadyState() {
-        isReady     = whisper.isReady && sessionENtoES != nil && sessionEStoEN != nil
-        statusLabel = whisper.isReady ? whisper.statusLabel : whisper.statusLabel
     }
 
     // MARK: - Permissions
@@ -102,11 +89,6 @@ final class TranslatorEngine: NSObject {
         guard mic else { errorMessage = "Permiso de micrófono denegado."; return false }
         return true
     }
-
-    // MARK: - Translation sessions
-
-    func setSessionENtoES(_ s: TranslationSession) { sessionENtoES = s; updateReadyState() }
-    func setSessionEStoEN(_ s: TranslationSession) { sessionEStoEN = s; updateReadyState() }
 
     // MARK: - Mic buttons
 
@@ -132,10 +114,8 @@ final class TranslatorEngine: NSObject {
     // MARK: - Audio engine
 
     private func startAudio() throws {
-        liveEnglish  = ""
-        liveSpanish  = ""
-        streamedSoFar = ""
-        whisper.reset()
+        liveEnglish = ""
+        liveSpanish = ""
         currentConversation = StoredConversation()
 
         let av = AVAudioSession.sharedInstance()
@@ -149,41 +129,24 @@ final class TranslatorEngine: NSObject {
         let input  = audioEngine.inputNode
         let format = input.outputFormat(forBus: 0)
 
-        if activeMic == .spanish {
-            // Español: SFSpeechRecognizer como antes
-            requestES = SFSpeechAudioBufferRecognitionRequest()
-            requestES?.shouldReportPartialResults = true
-
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
-                guard let self, !self.blockMic else { return }
-                self.requestES?.append(buf)
-                self.updateLevel(buf)
-            }
-            launchSpanishTask()
-        } else {
-            // Inglés: Whisper
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
-                guard let self, !self.blockMic else { return }
-                self.whisper.append(buf)
-                self.updateLevel(buf)
-            }
-            startWhisperLoop()
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
+            guard let self, !self.blockMic else { return }
+            self.activeRequest?.append(buf)
+            self.updateLevel(buf)
         }
 
         audioEngine.prepare()
         try audioEngine.start()
+        launchRecognitionTask()
     }
 
     func stopListening() {
         debounceTask?.cancel()
-        whisperLoopTask?.cancel()
-        whisperLoopTask = nil
         if activeMic != .none { store.upsert(currentConversation) }
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
-        requestES?.endAudio(); taskES?.cancel()
-        requestES = nil; taskES = nil
-        whisper.reset()
+        activeRequest?.endAudio(); activeTask?.cancel()
+        activeRequest = nil; activeTask = nil
         activeMic    = .none
         blockMic     = false
         audioLevel   = 0
@@ -191,7 +154,112 @@ final class TranslatorEngine: NSObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
+    // MARK: - SFSpeechRecognizer (ambos idiomas)
+
+    private func launchRecognitionTask() {
+        let recognizer = activeMic == .english ? recognizerEN : recognizerES
+        guard recognizer.isAvailable else {
+            log("Reconocedor no disponible")
+            return
+        }
+
+        activeRequest = SFSpeechAudioBufferRecognitionRequest()
+        activeRequest?.shouldReportPartialResults = true
+
+        activeTask = recognizer.recognitionTask(with: activeRequest!) { [weak self] result, error in
+            guard let self else { return }
+
+            if (error as NSError?)?.code == 1110 {
+                Task { @MainActor in self.restartRecognitionTask() }
+                return
+            }
+            guard let result else { return }
+
+            let text    = result.bestTranscription.formattedString
+            let isFinal = result.isFinal
+
+            Task { @MainActor in
+                self.updateLiveText(text)
+                self.debounceTask?.cancel()
+
+                if isFinal {
+                    self.debounceTask = Task { await self.handleFinalText(text) }
+                } else {
+                    self.debounceTask = Task {
+                        try? await Task.sleep(for: .milliseconds(1500))
+                        guard !Task.isCancelled else { return }
+                        let silence = self.silenceStart.map { Date().timeIntervalSince($0) } ?? 0
+                        if silence >= 1.2 { await self.handleFinalText(text) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func restartRecognitionTask() {
+        guard activeMic != .none else { return }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        activeRequest?.endAudio(); activeTask?.cancel()
+        activeRequest = nil; activeTask = nil
+
+        Task {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard self.activeMic != .none else { return }
+            let input  = self.audioEngine.inputNode
+            let format = input.outputFormat(forBus: 0)
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
+                guard let self, !self.blockMic else { return }
+                self.activeRequest?.append(buf)
+                self.updateLevel(buf)
+            }
+            self.launchRecognitionTask()
+        }
+    }
+
+    // MARK: - Traducción
+
+    private func handleFinalText(_ text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isTranslating, activeMic != .none, !trimmed.isEmpty else { return }
+
+        isTranslating = true
+        defer { isTranslating = false }
+
+        let isEN = activeMic == .english
+        let (from, to, voice, toSpeaker) = isEN
+            ? ("en", "es", "es-ES", false)
+            : ("es", "en", "en-US", true)
+
+        log("Traduciendo (\(from)→\(to)): \"\(trimmed.prefix(40))\"")
+
+        do {
+            let translated = try await azureTranslator.translate(trimmed, from: from, to: to)
+            log("OK: \"\(translated.prefix(40))\"")
+
+            if isEN {
+                messages.append(TranslationMessage(english: trimmed, spanish: translated))
+                currentConversation.messages.append(
+                    StoredMessage(original: trimmed, translated: translated, sourceLang: "en"))
+            } else {
+                messages.append(TranslationMessage(english: translated, spanish: trimmed))
+                currentConversation.messages.append(
+                    StoredMessage(original: trimmed, translated: translated, sourceLang: "es"))
+            }
+            store.upsert(currentConversation)
+            liveEnglish = ""
+            liveSpanish = ""
+            speak(translated, voice: voice, toSpeaker: toSpeaker)
+        } catch {
+            log("Error traducción: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Audio level / VAD
+
+    private func updateLiveText(_ text: String) {
+        if activeMic == .english { liveEnglish = text }
+        else                      { liveSpanish = text }
+    }
 
     private func updateLevel(_ buffer: AVAudioPCMBuffer) {
         guard let data = buffer.floatChannelData?[0] else { return }
@@ -206,149 +274,12 @@ final class TranslatorEngine: NSObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.audioLevel = lvl
-
-            let isSilent = db < -40
-            if isSilent {
+            if db < -40 {
                 if self.silenceStart == nil { self.silenceStart = Date() }
             } else {
                 self.silenceStart = nil
-                if self.activeMic == .english && self.liveEnglish.isEmpty {
-                    self.liveEnglish = "Escuchando..."
-                }
             }
         }
-    }
-
-    // MARK: - Inglés: Whisper bucle periódico
-
-    private func startWhisperLoop() {
-        whisperLoopTask?.cancel()
-        whisperLoopTask = Task {
-            while !Task.isCancelled && self.activeMic == .english {
-                try? await Task.sleep(for: .milliseconds(2500))
-                guard !Task.isCancelled, self.activeMic == .english else { break }
-                guard self.whisper.hasEnoughAudio else {
-                    self.log("Buffer insuficiente (\(self.whisper.bufferCount) samples), esperando...")
-                    continue
-                }
-                self.log("Transcribiendo (\(self.whisper.bufferCount) samples)...")
-                self.liveEnglish = "Transcribiendo..."
-                let t0 = Date()
-                guard let text = await self.whisper.transcribe(), !text.isEmpty else {
-                    self.log("Whisper vacío (\(String(format:"%.1f", Date().timeIntervalSince(t0)))s)")
-                    self.liveEnglish = ""
-                    continue
-                }
-                self.log("Whisper OK \(String(format:"%.1f", Date().timeIntervalSince(t0)))s: \"\(text.prefix(40))\"")
-                self.liveEnglish = text
-                await self.handleEnglishText(text)
-            }
-        }
-    }
-
-    private func handleEnglishText(_ text: String) async {
-        guard !isTranslating, activeMic == .english else { return }
-        guard let session = sessionENtoES else { return }
-
-        isTranslating = true
-        defer { isTranslating = false }
-
-        do {
-            let result     = try await session.translate(text)
-            let translated = result.targetText
-            liveSpanish   += (liveSpanish.isEmpty ? "" : " ") + translated
-
-            // Guardar en historial
-            messages.append(TranslationMessage(english: text, spanish: translated))
-            currentConversation.messages.append(StoredMessage(
-                original: text, translated: translated, sourceLang: "en"
-            ))
-            store.upsert(currentConversation)
-            liveEnglish = ""
-            liveSpanish = ""
-
-            // TTS en español → AirPods (sin bloquear mic)
-            speak(translated, voice: "es-MX", toSpeaker: false)
-        } catch { print("EN translation error: \(error)") }
-    }
-
-    // MARK: - Español: SFSpeechRecognizer → frase completa → altavoz
-
-    private func launchSpanishTask() {
-        guard let req = requestES else { return }
-        taskES = recognizerES.recognitionTask(with: req) { [weak self] result, error in
-            guard let self else { return }
-
-            if (error as NSError?)?.code == 1110 {
-                Task { @MainActor in self.restartSpanishTask() }
-                return
-            }
-            guard let result else { return }
-            let text    = result.bestTranscription.formattedString
-            let isFinal = result.isFinal
-
-            Task { @MainActor in
-                self.liveSpanish = text
-                self.debounceTask?.cancel()
-
-                if isFinal {
-                    self.debounceTask = Task { await self.handleSpanishFull(text) }
-                } else {
-                    self.debounceTask = Task {
-                        try? await Task.sleep(for: .milliseconds(1500))
-                        guard !Task.isCancelled else { return }
-                        let silence = self.silenceStart.map { Date().timeIntervalSince($0) } ?? 0
-                        if silence >= 1.2 { await self.handleSpanishFull(text) }
-                    }
-                }
-            }
-        }
-    }
-
-    private func restartSpanishTask() {
-        guard activeMic == .spanish else { return }
-        audioEngine.inputNode.removeTap(onBus: 0)
-        requestES?.endAudio(); taskES?.cancel()
-        requestES = nil; taskES = nil
-
-        Task {
-            try? await Task.sleep(for: .milliseconds(200))
-            guard self.activeMic == .spanish else { return }
-            self.requestES = SFSpeechAudioBufferRecognitionRequest()
-            self.requestES?.shouldReportPartialResults = true
-            let input  = self.audioEngine.inputNode
-            let format = input.outputFormat(forBus: 0)
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
-                guard let self, !self.blockMic else { return }
-                self.requestES?.append(buf)
-                self.updateLevel(buf)
-            }
-            self.launchSpanishTask()
-        }
-    }
-
-    private func handleSpanishFull(_ text: String) async {
-        guard !isTranslating, activeMic == .spanish, !text.isEmpty else { return }
-        guard let session = sessionEStoEN else { return }
-
-        isTranslating = true
-        defer { isTranslating = false }
-
-        do {
-            let result     = try await session.translate(text)
-            let translated = result.targetText
-
-            messages.append(TranslationMessage(english: translated, spanish: text))
-            currentConversation.messages.append(StoredMessage(
-                original: text, translated: translated, sourceLang: "es"
-            ))
-            store.upsert(currentConversation)
-            liveSpanish = ""
-            liveEnglish = ""
-
-            // TTS en inglés → altavoz → gate mic
-            speak(translated, voice: "en-US", toSpeaker: true)
-        } catch { print("ES translation error: \(error)") }
     }
 
     // MARK: - TTS
@@ -363,9 +294,9 @@ final class TranslatorEngine: NSObject {
             try? av.overrideOutputAudioPort(.none)
             blockMic = false
         }
-        let u      = AVSpeechUtterance(string: text)
-        u.voice    = AVSpeechSynthesisVoice(language: voice)
-        u.rate     = AVSpeechUtteranceDefaultSpeechRate
+        let u   = AVSpeechUtterance(string: text)
+        u.voice = AVSpeechSynthesisVoice(language: voice)
+        u.rate  = AVSpeechUtteranceDefaultSpeechRate
         isSpeaking = true
         synthesizer.speak(u)
     }
@@ -374,7 +305,8 @@ final class TranslatorEngine: NSObject {
 // MARK: - AVSpeechSynthesizerDelegate
 
 extension TranslatorEngine: AVSpeechSynthesizerDelegate {
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish _: AVSpeechUtterance) {
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
+                                       didFinish _: AVSpeechUtterance) {
         Task { @MainActor in
             guard !synthesizer.isSpeaking else { return }
             self.isSpeaking = false
@@ -382,7 +314,8 @@ extension TranslatorEngine: AVSpeechSynthesizerDelegate {
             self.blockMic = false
         }
     }
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel _: AVSpeechUtterance) {
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
+                                       didCancel _: AVSpeechUtterance) {
         Task { @MainActor in self.isSpeaking = false; self.blockMic = false }
     }
 }
