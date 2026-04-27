@@ -33,9 +33,9 @@ struct AzureTranslatorClient {
             return translated
         }
 
-        // Loguear respuesta de error para diagnóstico
-        let raw = String(data: data, encoding: .utf8) ?? "?"
-        print("Azure Translator HTTP \(statusCode): \(raw)")
-        throw URLError(.badServerResponse)
+        // Lanzar error con el cuerpo de respuesta visible en el debug overlay
+        let raw = String(data: data, encoding: .utf8) ?? "sin cuerpo"
+        throw NSError(domain: "AzureTranslator", code: statusCode,
+                      userInfo: [NSLocalizedDescriptionKey: "HTTP\(statusCode): \(raw.prefix(120))"])
     }
 }
