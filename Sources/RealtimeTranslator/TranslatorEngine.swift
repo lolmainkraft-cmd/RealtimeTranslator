@@ -41,8 +41,8 @@ final class TranslatorEngine: NSObject {
     private var activeRequest: SFSpeechAudioBufferRecognitionRequest?
     private var activeTask:    SFSpeechRecognitionTask?
 
-    // Azure Translator
-    private let azureTranslator = AzureTranslatorClient()
+    // Apple Translation
+    let translator = AppleTranslator()
 
     // Historia
     var store = ConversationStore()
@@ -238,7 +238,7 @@ final class TranslatorEngine: NSObject {
         log("Traduciendo (\(from)→\(to)): \"\(trimmed.prefix(40))\"")
 
         do {
-            let translated = try await azureTranslator.translate(trimmed, from: from, to: to)
+            let translated = try await translator.translate(trimmed, from: from, to: to)
             log("OK: \"\(translated.prefix(40))\"")
 
             let src = isEN ? "en" : "es"

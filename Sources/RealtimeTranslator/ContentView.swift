@@ -26,6 +26,9 @@ struct ContentView: View {
         .sheet(isPresented: $showHistory) { HistoryView(store: engine.store) }
         .overlay(alignment: .bottom) { debugOverlay }
         .task { await engine.boot() }
+        .translationTask(engine.translator.config) { session in
+            await engine.translator.handleSession(session)
+        }
     }
 
     // MARK: - Debug overlay
