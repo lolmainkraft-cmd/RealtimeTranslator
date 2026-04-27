@@ -143,6 +143,7 @@ final class TranslatorEngine: NSObject {
 
     func stopListening() {
         debounceTask?.cancel()
+        translator.cancel()
         if activeMic != .none { store.upsert(currentConversation) }
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)

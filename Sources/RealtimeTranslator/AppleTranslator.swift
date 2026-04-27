@@ -11,12 +11,19 @@ final class AppleTranslator {
 
     func translate(_ text: String, from: String, to: String) async throws -> String {
         pendingText = text
-        return try await withCheckedThrowingContinuation { cont in
-            continuation = cont
-            config = TranslationSession.Configuration(
-                source: Locale.Language(identifier: from),
-                target: Locale.Language(identifier: to)
-            )
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { [weak self] cont in
+                guard let self else { cont.resume(throwing: CancellationError()); return }
+                // Cancelar cualquier traducción pendiente anterior
+                self.continuation?.resume(throwing: CancellationError())
+                self.continuation = cont
+                self.config = TranslationSession.Configuration(
+                    source: Locale.Language(identifier: from),
+                    target: Locale.Language(identifier: to)
+                )
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.cancel() }
         }
     }
 
@@ -30,5 +37,12 @@ final class AppleTranslator {
             cont.resume(throwing: error)
         }
         config = nil
+    }
+
+    func cancel() {
+        guard let cont = continuation else { return }
+        continuation = nil
+        config = nil
+        cont.resume(throwing: CancellationError())
     }
 }
