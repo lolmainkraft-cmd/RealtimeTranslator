@@ -1,4 +1,5 @@
 import SwiftUI
+import Translation
 
 // Color por interlocutor: amarillo = tú (español), azul = el otro (inglés)
 private extension Color {
